@@ -81,6 +81,11 @@ impl AppState {
     ) -> Result<(ViewerSlot, Vec<Arc<dyn TrackLocal>>, watch::Receiver<bool>), &'static str> {
         let live = self.live.lock().expect("live poisoned");
         let session = live.as_ref().ok_or("a transmissão não está ativa")?;
+        if session.broadcaster.ended() {
+            return Err("a transmissão não está ativa");
+        }
+        // Keyframe para o peer novo decodificar já no primeiro quadro.
+        session.broadcaster.request_keyframe();
         let max = self.config.max_viewers;
         self.viewers
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {

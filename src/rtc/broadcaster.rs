@@ -1,15 +1,18 @@
 //! Transmissão única: um encode de vídeo e um de áudio, compartilhados por todos os peers.
 //! Cada peer recebe as mesmas tracks, então o custo de encode não cresce com os espectadores.
+//!
+//! Fontes: a janela escolhida (WGC + Process Loopback) ou a fonte de teste (vídeo animado + tom).
+//! Vídeo e áudio carimbam os quadros com `Instant` do mesmo processo, então usam um relógio comum.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use tokio::runtime::Handle;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use webrtc::media_stream::track_local::TrackLocal;
 use webrtc::media_stream::track_local::static_sample::TrackLocalStaticSample;
 
@@ -22,9 +25,9 @@ use ::rtc::rtp_transceiver::rtp_sender::{
     RtpCodecKind,
 };
 
-use crate::capture::audio::{CHANNELS, SAMPLE_RATE, SineSource};
-use crate::capture::video::test_frame;
-use crate::encode::h264::H264Encoder;
+use crate::capture::audio::{AudioCapture, CHANNELS, SAMPLE_RATE, SineSource};
+use crate::capture::video::{WindowCapture, WindowState, window_pid};
+use crate::encode::h264::{H264Encoder, even_size};
 use crate::encode::opus::OpusEncoder;
 
 /// Payload types negociados (iguais em todos os peers, pois o MediaEngine é o mesmo).
@@ -37,6 +40,13 @@ pub const TEST_FPS: u32 = 30;
 const TEST_TONE_HZ: f64 = 440.0;
 const TEST_TONE_AMPLITUDE: f64 = 0.2;
 const AUDIO_FRAME: Duration = Duration::from_millis(20);
+const VIDEO_FPS: f32 = 30.0;
+/// Duração de quadro usada quando o WGC ainda não deu dois carimbos.
+const FALLBACK_FRAME: Duration = Duration::from_micros(33_333);
+const WINDOW_POLL: Duration = Duration::from_millis(100);
+pub const NOTICE_WINDOW_CLOSED: &str = "janela fechada";
+pub const NOTICE_MINIMIZED: &str =
+    "janela minimizada: o Windows não envia quadros; restaure a janela para continuar";
 
 /// Codec H.264 (Constrained Baseline, packetization-mode=1).
 pub fn video_codec() -> RTCRtpCodecParameters {
@@ -80,16 +90,106 @@ fn encoding(ssrc: u32, codec: RTCRtpCodecParameters) -> RTCRtpEncodingParameters
     }
 }
 
+/// Estado da fonte visível para a API: fim da captura e avisos.
+#[derive(Default)]
+pub struct SourceStatus {
+    ended: AtomicBool,
+    minimized: AtomicBool,
+    notices: Mutex<Vec<String>>,
+}
+
+impl SourceStatus {
+    fn add_notice(&self, notice: impl Into<String>) {
+        let mut notices = self.notices.lock().unwrap_or_else(PoisonError::into_inner);
+        let notice = notice.into();
+        if !notices.contains(&notice) {
+            notices.push(notice);
+        }
+    }
+
+    /// Encerra a transmissão por causa da fonte (ex.: janela fechada).
+    fn end(&self, reason: impl Into<String>) {
+        self.ended.store(true, Ordering::SeqCst);
+        self.add_notice(reason);
+    }
+
+    fn set_minimized(&self, minimized: bool) {
+        self.minimized.store(minimized, Ordering::SeqCst);
+    }
+
+    pub fn ended(&self) -> bool {
+        self.ended.load(Ordering::SeqCst)
+    }
+
+    pub fn notices(&self) -> Vec<String> {
+        let mut notices = self
+            .notices
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if self.minimized.load(Ordering::SeqCst) {
+            notices.push(NOTICE_MINIMIZED.to_owned());
+        }
+        notices
+    }
+}
+
 pub struct Broadcaster {
     video: Arc<TrackLocalStaticSample>,
     audio: Arc<TrackLocalStaticSample>,
     stop: Arc<AtomicBool>,
+    keyframe: Arc<AtomicBool>,
+    status: Arc<SourceStatus>,
+}
+
+/// Fonte de vídeo de uma transmissão.
+enum VideoInput {
+    Test,
+    Window(WindowCapture),
+}
+
+/// Fonte de áudio de uma transmissão.
+enum AudioInput {
+    Tone,
+    /// Process Loopback do processo dono da janela.
+    Process(u32),
+}
+
+/// Tudo que a thread de vídeo precisa, para não estourar a lista de argumentos.
+struct VideoJob {
+    handle: Handle,
+    track: Arc<TrackLocalStaticSample>,
+    ssrc: u32,
+    input: VideoInput,
+    bitrate_bps: u32,
+    stop: Arc<AtomicBool>,
+    keyframe: Arc<AtomicBool>,
+    status: Arc<SourceStatus>,
 }
 
 impl Broadcaster {
     /// Inicia a fonte sintética (vídeo animado + tom senoidal) em threads próprias.
     /// Deve ser chamado dentro de um runtime tokio: o `Handle` é usado para escrever nas tracks.
-    pub fn start_test_source(handle: Handle) -> Result<Self> {
+    pub fn start_test_source(handle: Handle, bitrate_bps: u32) -> Result<Self> {
+        let broadcaster = Self::start(handle, VideoInput::Test, AudioInput::Tone, bitrate_bps)?;
+        info!(
+            "fonte de teste iniciada ({TEST_WIDTH}x{TEST_HEIGHT}@{TEST_FPS} + tom de {TEST_TONE_HZ} Hz)"
+        );
+        Ok(broadcaster)
+    }
+
+    /// Inicia a captura real de uma janela (vídeo WGC) e o áudio do processo dela (Process Loopback).
+    /// Se o áudio falhar, a transmissão segue só com vídeo e o aviso aparece em `notices`.
+    pub fn start_window(handle: Handle, hwnd: u64, bitrate_bps: u32) -> Result<Self> {
+        let capture = WindowCapture::start(hwnd)
+            .with_context(|| format!("não consegui capturar a janela {hwnd}"))?;
+        let pid = window_pid(hwnd)?;
+        let broadcaster = Self::start(handle, VideoInput::Window(capture), AudioInput::Process(pid), bitrate_bps)?;
+        info!(hwnd, pid, "captura da janela iniciada");
+        Ok(broadcaster)
+    }
+
+    fn start(handle: Handle, video_input: VideoInput, audio_input: AudioInput, bitrate_bps: u32) -> Result<Self> {
         let video_ssrc: u32 = rand::random();
         let audio_ssrc: u32 = rand::random();
         let video = Arc::new(TrackLocalStaticSample::new(
@@ -114,27 +214,39 @@ impl Broadcaster {
         )?);
 
         let stop = Arc::new(AtomicBool::new(false));
-        let video_encoder = H264Encoder::new(TEST_WIDTH, TEST_HEIGHT)?;
-        let audio_encoder = OpusEncoder::new()?;
+        let keyframe = Arc::new(AtomicBool::new(false));
+        let status = Arc::new(SourceStatus::default());
+
+        let job = VideoJob {
+            handle: handle.clone(),
+            track: video.clone(),
+            ssrc: video_ssrc,
+            input: video_input,
+            bitrate_bps,
+            stop: stop.clone(),
+            keyframe: keyframe.clone(),
+            status: status.clone(),
+        };
+        thread::Builder::new()
+            .name("video-source".to_owned())
+            .spawn(move || run_video(job))
+            .context("não consegui iniciar a thread de vídeo")?;
 
         {
-            let (track, stop, handle) = (video.clone(), stop.clone(), handle.clone());
-            thread::Builder::new()
-                .name("video-source".to_owned())
-                .spawn(move || run_video(handle, track, video_ssrc, video_encoder, stop))
-                .context("não consegui iniciar a thread de vídeo")?;
-        }
-        {
-            let (track, stop) = (audio.clone(), stop.clone());
+            let (track, stop, status) = (audio.clone(), stop.clone(), status.clone());
             thread::Builder::new()
                 .name("audio-source".to_owned())
-                .spawn(move || run_audio(handle, track, audio_ssrc, audio_encoder, stop))
+                .spawn(move || run_audio(handle, track, audio_ssrc, audio_input, stop, status))
                 .context("não consegui iniciar a thread de áudio")?;
         }
-        info!(
-            "fonte de teste iniciada ({TEST_WIDTH}x{TEST_HEIGHT}@{TEST_FPS} + tom de {TEST_TONE_HZ} Hz)"
-        );
-        Ok(Self { video, audio, stop })
+
+        Ok(Self {
+            video,
+            audio,
+            stop,
+            keyframe,
+            status,
+        })
     }
 
     /// Tracks adicionadas a cada peer (as mesmas instâncias para todos).
@@ -143,6 +255,20 @@ impl Broadcaster {
             self.video.clone() as Arc<dyn TrackLocal>,
             self.audio.clone() as Arc<dyn TrackLocal>,
         ]
+    }
+
+    /// Pede um keyframe no próximo quadro (viewer novo ou PLI/FIR).
+    pub fn request_keyframe(&self) {
+        self.keyframe.store(true, Ordering::SeqCst);
+    }
+
+    /// `true` quando a fonte encerrou a transmissão (ex.: janela fechada).
+    pub fn ended(&self) -> bool {
+        self.status.ended()
+    }
+
+    pub fn notices(&self) -> Vec<String> {
+        self.status.notices()
     }
 
     pub fn stop(&self) {
@@ -156,38 +282,56 @@ impl Drop for Broadcaster {
     }
 }
 
-fn run_video(
-    handle: Handle,
-    track: Arc<TrackLocalStaticSample>,
+fn run_video(job: VideoJob) {
+    let VideoJob {
+        handle,
+        track,
+        ssrc,
+        input,
+        bitrate_bps,
+        stop,
+        keyframe,
+        status,
+    } = job;
+    match input {
+        VideoInput::Test => run_test_video(&handle, &track, ssrc, bitrate_bps, &stop, &keyframe),
+        VideoInput::Window(capture) => {
+            run_window_video(&handle, &track, ssrc, capture, bitrate_bps, &stop, &keyframe, &status)
+        }
+    }
+    debug!("thread de vídeo encerrada");
+}
+
+fn run_test_video(
+    handle: &Handle,
+    track: &TrackLocalStaticSample,
     ssrc: u32,
-    mut encoder: H264Encoder,
-    stop: Arc<AtomicBool>,
+    bitrate_bps: u32,
+    stop: &AtomicBool,
+    keyframe: &AtomicBool,
 ) {
+    let mut encoder = match H264Encoder::new(TEST_WIDTH, TEST_HEIGHT, bitrate_bps, TEST_FPS as f32) {
+        Ok(encoder) => encoder,
+        Err(err) => {
+            error!(error = %format!("{err:#}"), "encoder de vídeo não iniciou");
+            return;
+        }
+    };
     let frame = Duration::from_secs_f64(1.0 / TEST_FPS as f64);
     let mut next = Instant::now();
     let mut index: u64 = 0;
     while !stop.load(Ordering::SeqCst) {
-        if index % TEST_FPS as u64 == 0 {
+        if keyframe.swap(false, Ordering::SeqCst) {
             encoder.force_keyframe();
         }
-        let rgb = test_frame(index, TEST_WIDTH, TEST_HEIGHT);
-        match encoder.encode_rgb(&rgb) {
+        let bgra = test_frame(index, TEST_WIDTH, TEST_HEIGHT);
+        match encoder.encode_bgra(&bgra, TEST_WIDTH * 4) {
             Ok(data) if !data.is_empty() => {
-                let sample = Sample {
-                    data: Bytes::from(data),
-                    timestamp: Instant::now(),
-                    duration: frame,
-                    ..Sample::new(Instant::now())
-                };
-                let writer = track.sample_writer(ssrc, VIDEO_PAYLOAD_TYPE);
-                if let Err(err) = handle.block_on(writer.write_sample(&sample)) {
-                    // Sem viewers conectados a escrita falha; é esperado.
-                    debug!(%err, "quadro de vídeo não entregue");
-                }
+                write_video(handle, track, ssrc, data, Instant::now(), frame);
             }
             Ok(_) => {}
             Err(err) => {
-                error!(error = %err, "encoder de vídeo parou");
+                error!(error = %format!("{err:#}"), "encoder de vídeo parou");
                 break;
             }
         }
@@ -195,42 +339,191 @@ fn run_video(
         next += frame;
         pace(&mut next);
     }
-    debug!("thread de vídeo encerrada");
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_window_video(
+    handle: &Handle,
+    track: &TrackLocalStaticSample,
+    ssrc: u32,
+    mut capture: WindowCapture,
+    bitrate_bps: u32,
+    stop: &AtomicBool,
+    keyframe: &AtomicBool,
+    status: &SourceStatus,
+) {
+    let mut encoder: Option<H264Encoder> = None;
+    let mut last_stamp: Option<i64> = None;
+    while !stop.load(Ordering::SeqCst) {
+        match capture.state() {
+            WindowState::Closed => {
+                info!("janela fechada: encerrando a transmissão");
+                status.end(NOTICE_WINDOW_CLOSED);
+                break;
+            }
+            WindowState::Minimized => status.set_minimized(true),
+            WindowState::Running => status.set_minimized(false),
+        }
+        let Some(frame) = capture.next_frame(WINDOW_POLL) else {
+            continue;
+        };
+        let (width, height) = even_size(frame.width, frame.height);
+        if frame.width < 2 || frame.height < 2 {
+            continue;
+        }
+        if encoder.as_ref().map(H264Encoder::dimensions) != Some((width, height)) {
+            // Primeiro quadro ou janela redimensionada: encoder novo, sempre com IDR.
+            info!(width, height, "dimensões de captura: (re)criando encoder H.264");
+            match H264Encoder::new(width, height, bitrate_bps, VIDEO_FPS) {
+                Ok(new_encoder) => encoder = Some(new_encoder),
+                Err(err) => {
+                    status.end(format!("encoder de vídeo: {err:#}"));
+                    break;
+                }
+            }
+        }
+        let Some(enc) = encoder.as_mut() else { continue };
+        if keyframe.swap(false, Ordering::SeqCst) {
+            enc.force_keyframe();
+        }
+        let duration = frame_duration(last_stamp, frame.timestamp_100ns);
+        last_stamp = Some(frame.timestamp_100ns);
+        let stride = frame.width as usize * 4;
+        match enc.encode_bgra(&frame.bgra, stride) {
+            Ok(data) if !data.is_empty() => write_video(handle, track, ssrc, data, frame.at, duration),
+            Ok(_) => {}
+            Err(err) => {
+                status.end(format!("encoder de vídeo: {err:#}"));
+                break;
+            }
+        }
+    }
+    let dropped = capture.dropped_frames();
+    if dropped > 0 {
+        debug!(dropped, "quadros descartados (encoder atrasado)");
+    }
+    capture.stop();
+}
+
+/// Duração de um quadro a partir dos carimbos do WGC (100 ns). Limitada para não virar zero nem travar.
+fn frame_duration(previous: Option<i64>, now: i64) -> Duration {
+    match previous {
+        Some(prev) if now > prev => Duration::from_nanos(((now - prev) as u64).saturating_mul(100))
+            .clamp(Duration::from_millis(1), Duration::from_millis(200)),
+        _ => FALLBACK_FRAME,
+    }
+}
+
+fn write_video(
+    handle: &Handle,
+    track: &TrackLocalStaticSample,
+    ssrc: u32,
+    data: Vec<u8>,
+    at: Instant,
+    duration: Duration,
+) {
+    let sample = Sample {
+        data: Bytes::from(data),
+        timestamp: at,
+        duration,
+        ..Sample::new(at)
+    };
+    let writer = track.sample_writer(ssrc, VIDEO_PAYLOAD_TYPE);
+    if let Err(err) = handle.block_on(writer.write_sample(&sample)) {
+        // Sem viewers conectados a escrita falha; é esperado.
+        debug!(%err, "quadro de vídeo não entregue");
+    }
 }
 
 fn run_audio(
     handle: Handle,
     track: Arc<TrackLocalStaticSample>,
     ssrc: u32,
-    mut encoder: OpusEncoder,
+    input: AudioInput,
     stop: Arc<AtomicBool>,
+    status: Arc<SourceStatus>,
+) {
+    let encoder = match OpusEncoder::new() {
+        Ok(encoder) => encoder,
+        Err(err) => {
+            error!(error = %format!("{err:#}"), "encoder de áudio não iniciou");
+            return;
+        }
+    };
+    match input {
+        AudioInput::Tone => run_tone_audio(&handle, &track, ssrc, encoder, &stop),
+        AudioInput::Process(pid) => run_process_audio(&handle, &track, ssrc, encoder, pid, &stop, &status),
+    }
+    debug!("thread de áudio encerrada");
+}
+
+fn run_tone_audio(
+    handle: &Handle,
+    track: &TrackLocalStaticSample,
+    ssrc: u32,
+    mut encoder: OpusEncoder,
+    stop: &AtomicBool,
 ) {
     let mut tone = SineSource::new(TEST_TONE_HZ, TEST_TONE_AMPLITUDE);
     let mut next = Instant::now();
     while !stop.load(Ordering::SeqCst) {
         let pcm = tone.next_frame();
         match encoder.encode(&pcm) {
-            Ok(data) => {
-                let sample = Sample {
-                    data: Bytes::from(data),
-                    timestamp: Instant::now(),
-                    duration: AUDIO_FRAME,
-                    ..Sample::new(Instant::now())
-                };
-                let writer = track.sample_writer(ssrc, AUDIO_PAYLOAD_TYPE);
-                if let Err(err) = handle.block_on(writer.write_sample(&sample)) {
-                    debug!(%err, "quadro de áudio não entregue");
-                }
-            }
+            Ok(data) => write_audio(handle, track, ssrc, data, Instant::now()),
             Err(err) => {
-                error!(error = %err, "encoder de áudio parou");
+                error!(error = %format!("{err:#}"), "encoder de áudio parou");
                 break;
             }
         }
         next += AUDIO_FRAME;
         pace(&mut next);
     }
-    debug!("thread de áudio encerrada");
+}
+
+fn run_process_audio(
+    handle: &Handle,
+    track: &TrackLocalStaticSample,
+    ssrc: u32,
+    mut encoder: OpusEncoder,
+    pid: u32,
+    stop: &AtomicBool,
+    status: &SourceStatus,
+) {
+    // A captura fica viva enquanto esta função roda; ao sair, o Drop sinaliza a thread do WASAPI.
+    let (_capture, chunks) = match AudioCapture::start(pid) {
+        Ok(started) => started,
+        Err(err) => {
+            warn!(error = %format!("{err:#}"), "sem áudio do processo; transmitindo só vídeo");
+            status.add_notice(format!("sem áudio do processo: {err:#}"));
+            return;
+        }
+    };
+    while !stop.load(Ordering::SeqCst) {
+        match chunks.recv_timeout(Duration::from_millis(100)) {
+            Ok(pcm) => match encoder.encode(&pcm) {
+                Ok(data) => write_audio(handle, track, ssrc, data, Instant::now()),
+                Err(err) => {
+                    error!(error = %format!("{err:#}"), "encoder de áudio parou");
+                    break;
+                }
+            },
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+}
+
+fn write_audio(handle: &Handle, track: &TrackLocalStaticSample, ssrc: u32, data: Vec<u8>, at: Instant) {
+    let sample = Sample {
+        data: Bytes::from(data),
+        timestamp: at,
+        duration: AUDIO_FRAME,
+        ..Sample::new(at)
+    };
+    let writer = track.sample_writer(ssrc, AUDIO_PAYLOAD_TYPE);
+    if let Err(err) = handle.block_on(writer.write_sample(&sample)) {
+        debug!(%err, "quadro de áudio não entregue");
+    }
 }
 
 /// Dorme até `next` (agenda por relógio, sem acumular atraso). Se já passou, reancora.
@@ -240,5 +533,63 @@ fn pace(next: &mut Instant) {
         thread::sleep(*next - now);
     } else {
         *next = now;
+    }
+}
+
+/// Quadro BGRA de teste (`width * height * 4` bytes): gradiente que se move, quadrado branco e barra de progresso.
+pub fn test_frame(index: u64, width: usize, height: usize) -> Vec<u8> {
+    let mut bgra = vec![0u8; width * height * 4];
+    let shift = (index as usize * 4) % 256;
+    let square = 80usize;
+    let square_x = (index as usize * 6) % (width - square);
+    let square_y = height / 3;
+    let bar_len = (index as usize * 8) % width;
+
+    for y in 0..height {
+        for x in 0..width {
+            let offset = (y * width + x) * 4;
+            let (mut r, mut g, mut b) = (
+                ((x + shift) % 256) as u8,
+                (y * 255 / height) as u8,
+                ((x + y + shift * 2) % 256) as u8,
+            );
+            if x >= square_x && x < square_x + square && y >= square_y && y < square_y + square {
+                r = 255;
+                g = 255;
+                b = 255;
+            }
+            if y >= height - 16 && x <= bar_len {
+                r = 255;
+                g = 200;
+                b = 0;
+            }
+            bgra[offset] = b;
+            bgra[offset + 1] = g;
+            bgra[offset + 2] = r;
+            bgra[offset + 3] = 255;
+        }
+    }
+    bgra
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_duration_uses_capture_stamps() {
+        // 333_333 unidades de 100 ns = 33,3 ms.
+        assert_eq!(frame_duration(Some(0), 333_333), Duration::from_nanos(33_333_300));
+        assert_eq!(frame_duration(None, 0), FALLBACK_FRAME);
+        assert_eq!(frame_duration(Some(10), 10), FALLBACK_FRAME, "carimbo repetido");
+        assert_eq!(frame_duration(Some(0), 1), Duration::from_millis(1), "piso de 1 ms");
+        assert_eq!(frame_duration(Some(0), 100_000_000), Duration::from_millis(200), "teto de 200 ms");
+    }
+
+    #[test]
+    fn test_frame_is_bgra_sized() {
+        let frame = test_frame(3, 128, 96);
+        assert_eq!(frame.len(), 128 * 96 * 4);
+        assert!(frame.chunks(4).all(|px| px[3] == 255));
     }
 }

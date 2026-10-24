@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tracing::{info, warn};
 
-use crate::capture::video;
 use crate::rtc::broadcaster::Broadcaster;
 use crate::server::{AppState, LiveSession};
 use crate::windows_list::{WindowInfo, list_visible_windows};
@@ -79,24 +78,30 @@ async fn start(
     Json(request): Json<StartRequest>,
 ) -> Result<Json<StatusBody>, ApiError> {
     let mut live = state.live.lock().expect("live poisoned");
-    if live.is_some() {
+    if live.as_ref().is_some_and(|session| !session.broadcaster.ended()) {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
             "já existe uma transmissão ativa",
         ));
     }
+    // Uma transmissão encerrada pela fonte (janela fechada) é substituída.
+    if let Some(old) = live.take() {
+        let _ = old.stop.send(true);
+        old.broadcaster.stop();
+    }
 
+    let handle = tokio::runtime::Handle::current();
+    let bitrate = state.config.video_bitrate_bps();
     let (broadcaster, source) = if request.test {
-        let broadcaster = Broadcaster::start_test_source(tokio::runtime::Handle::current())
+        let broadcaster = Broadcaster::start_test_source(handle, bitrate)
             .map_err(|err| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("{err:#}")))?;
         (broadcaster, "test")
     } else if let Some(hwnd) = request.hwnd {
-        // Captura de janela (fase 3) ainda não existe: responde 501 com o motivo.
-        let reason = match video::start_window_capture(hwnd) {
-            Ok(()) => "captura de janela indisponível".to_owned(),
-            Err(err) => format!("{err:#}"),
-        };
-        return Err(ApiError::new(StatusCode::NOT_IMPLEMENTED, reason));
+        let broadcaster = Broadcaster::start_window(handle, hwnd, bitrate).map_err(|err| {
+            warn!(error = %format!("{err:#}"), "não consegui iniciar a captura");
+            ApiError::new(StatusCode::BAD_REQUEST, format!("{err:#}"))
+        })?;
+        (broadcaster, "window")
     } else {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -130,8 +135,18 @@ async fn status(State(state): State<Arc<AppState>>) -> Json<StatusBody> {
 
 fn snapshot(state: &AppState) -> StatusBody {
     let live = state.live.lock().expect("live poisoned");
+    let mut notices = state.notices.clone();
     let (status, source, link) = match live.as_ref() {
-        Some(session) => ("live", Some(session.source), Some(state.viewer_link())),
+        Some(session) if session.broadcaster.ended() => {
+            // A fonte encerrou (ex.: janela fechada): derruba os espectadores uma vez, sem remover a sessão.
+            let _ = session.stop.send_replace(true);
+            notices.extend(session.broadcaster.notices());
+            ("ended", Some(session.source), None)
+        }
+        Some(session) => {
+            notices.extend(session.broadcaster.notices());
+            ("live", Some(session.source), Some(state.viewer_link()))
+        }
         None => ("idle", None, None),
     };
     StatusBody {
@@ -145,6 +160,6 @@ fn snapshot(state: &AppState) -> StatusBody {
             crate::config::TunnelMode::Managed => "managed",
             crate::config::TunnelMode::None => "none",
         },
-        notices: state.notices.clone(),
+        notices,
     }
 }

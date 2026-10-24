@@ -21,6 +21,9 @@ tunnel = "external"
 # Limite de espectadores simultâneos. Padrão: 10.
 max_viewers = 10
 
+# Taxa-alvo do vídeo em kbps (500 a 50000). Padrão: 6000 (6 Mbps).
+video_bitrate_kbps = 6000
+
 # Faixa de portas UDP das conexões ICE (encaminhe no roteador). Padrão: 50000-50100.
 udp_port_min = 50000
 udp_port_max = 50100

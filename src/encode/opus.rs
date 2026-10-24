@@ -24,3 +24,16 @@ impl OpusEncoder {
             .context("falha ao codificar quadro Opus")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encodes_silence_to_a_small_packet() {
+        let mut encoder = OpusEncoder::new().unwrap();
+        let packet = encoder.encode(&[0i16; 1920]).unwrap();
+        assert!(!packet.is_empty());
+        assert!(packet.len() < 100, "silêncio deve custar poucos bytes: {}", packet.len());
+    }
+}

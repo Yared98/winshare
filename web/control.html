@@ -74,7 +74,7 @@
 
   function render(status) {
     const live = status.state === 'live';
-    $('state').textContent = live ? 'Ao vivo' : 'Parada';
+    $('state').textContent = live ? 'Ao vivo' : (status.state === 'ended' ? 'Encerrada' : 'Parada');
     $('viewers').textContent = `${status.viewers} de ${status.max_viewers} espectadores`;
     $('link').textContent = status.link || '';
     $('stop').disabled = !live;

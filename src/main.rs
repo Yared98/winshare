@@ -1,11 +1,3 @@
-mod capture;
-mod config;
-mod encode;
-mod rtc;
-mod server;
-mod tunnel;
-mod windows_list;
-
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,8 +8,9 @@ use tokio::net::TcpListener;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-use config::{Config, TunnelMode};
-use server::{AppState, control_router, public_router};
+use screencast::config::{Config, TunnelMode};
+use screencast::server::{self, AppState, control_router, public_router};
+use screencast::tunnel;
 
 /// Compartilha uma janela e o áudio do processo com espectadores no navegador (WebRTC).
 #[derive(Debug, Parser)]

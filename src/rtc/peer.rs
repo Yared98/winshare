@@ -219,7 +219,7 @@ mod tests {
     #[tokio::test]
     async fn offer_contains_h264_and_opus() {
         let config = Config::default();
-        let broadcaster = Broadcaster::start_test_source(tokio::runtime::Handle::current())
+        let broadcaster = Broadcaster::start_test_source(tokio::runtime::Handle::current(), 6_000_000)
             .expect("fonte de teste");
         let (peer, _events) = Peer::new(&config, 50_230, broadcaster.tracks())
             .await

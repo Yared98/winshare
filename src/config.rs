@@ -44,6 +44,8 @@ pub struct Config {
     pub password: Option<String>,
     /// Limite de espectadores simultâneos.
     pub max_viewers: usize,
+    /// Taxa-alvo do vídeo em kbps (padrão 6000 = 6 Mbps).
+    pub video_bitrate_kbps: u32,
     /// Faixa de portas UDP para as conexões ICE (encaminhar no roteador).
     pub udp_port_min: u16,
     pub udp_port_max: u16,
@@ -60,6 +62,7 @@ impl Default for Config {
             tunnel_name: None,
             password: None,
             max_viewers: 10,
+            video_bitrate_kbps: 6000,
             udp_port_min: 50000,
             udp_port_max: 50100,
             turn: None,
@@ -97,6 +100,9 @@ impl Config {
         if self.max_viewers == 0 {
             bail!("max_viewers precisa ser pelo menos 1");
         }
+        if !(500..=50_000).contains(&self.video_bitrate_kbps) {
+            bail!("video_bitrate_kbps precisa estar entre 500 e 50000");
+        }
         if self.tunnel == TunnelMode::Managed && self.tunnel_name.is_none() {
             bail!("tunnel = \"managed\" exige tunnel_name");
         }
@@ -104,6 +110,11 @@ impl Config {
             bail!("password não pode ser vazia (remova a chave para desativar a senha)");
         }
         Ok(())
+    }
+
+    /// Taxa-alvo do vídeo em bits por segundo.
+    pub fn video_bitrate_bps(&self) -> u32 {
+        self.video_bitrate_kbps * 1000
     }
 
     /// Endereço da porta pública (acessível pelo tunnel/roteador).
