@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Controle</title>
+<style>
+  :root { --bg: #0f1115; --fg: #e8eaf0; --muted: #9aa3b2; --card: #171a21; --accent: #4f8cff; --danger: #e5484d; }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { --bg: #f5f6fa; --fg: #1b1f29; --muted: #5b6475; --card: #ffffff; --accent: #2563eb; --danger: #d93636; }
+  }
+  :root[data-theme="light"] { --bg: #f5f6fa; --fg: #1b1f29; --muted: #5b6475; --card: #ffffff; --accent: #2563eb; --danger: #d93636; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; padding: 16px; }
+  main { max-width: 760px; margin: 0 auto; display: grid; gap: 16px; }
+  section { background: var(--card); border-radius: 10px; padding: 16px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 0 0 12px; }
+  p { margin: 4px 0; color: var(--muted); font-size: 14px; }
+  .link { word-break: break-all; font-family: ui-monospace, monospace; font-size: 14px; color: var(--fg); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+  button.secondary { background: transparent; color: var(--accent); }
+  button.danger { background: var(--danger); border-color: var(--danger); }
+  button:disabled { opacity: .5; cursor: default; }
+  ul { list-style: none; padding: 0; margin: 0; max-height: 320px; overflow: auto; }
+  li { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 8px 4px; border-bottom: 1px solid rgba(127,127,127,.2); }
+  li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .notice { color: var(--danger); }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <section>
+    <h1>Controle do compartilhamento</h1>
+    <p>Esta página só funciona neste computador.</p>
+  </section>
+
+  <section>
+    <h2>Transmissão</h2>
+    <div class="row">
+      <span id="state">Parada</span>
+      <span class="muted" id="viewers">0 espectadores</span>
+    </div>
+    <p class="link" id="link"></p>
+    <div class="row" style="margin-top:12px">
+      <button id="test" class="secondary" type="button">Iniciar fonte de teste</button>
+      <button id="stop" class="danger" type="button" disabled>Parar</button>
+    </div>
+    <p id="notices" class="notice"></p>
+  </section>
+
+  <section>
+    <h2>Janelas</h2>
+    <div class="row" style="margin-bottom:8px">
+      <button id="refresh" class="secondary" type="button">Atualizar lista</button>
+    </div>
+    <ul id="windows"><li><span class="muted">Carregando…</span></li></ul>
+    <p>Janela minimizada não gera imagem na captura. Use a janela em primeiro plano ou sem minimizar.</p>
+  </section>
+</main>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  let polling = null;
+
+  async function api(path, options) {
+    const response = await fetch(path, options);
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || `Erro ${response.status}`);
+    return body;
+  }
+
+  function render(status) {
+    const live = status.state === 'live';
+    $('state').textContent = live ? 'Ao vivo' : 'Parada';
+    $('viewers').textContent = `${status.viewers} de ${status.max_viewers} espectadores`;
+    $('link').textContent = status.link || '';
+    $('stop').disabled = !live;
+    $('test').disabled = live;
+    $('notices').textContent = (status.notices || []).join(' ');
+  }
+
+  async function refreshStatus() {
+    try { render(await api('/api/status')); } catch (err) { $('notices').textContent = err.message; }
+  }
+
+  async function loadWindows() {
+    const list = $('windows');
+    try {
+      const windows = await api('/api/windows');
+      list.innerHTML = '';
+      if (windows.length === 0) {
+        list.innerHTML = '<li><span class="muted">Nenhuma janela visível.</span></li>';
+        return;
+      }
+      for (const w of windows) {
+        const item = document.createElement('li');
+        const title = document.createElement('span');
+        title.textContent = `${w.title} (PID ${w.pid})`;
+        const button = document.createElement('button');
+        button.className = 'secondary';
+        button.type = 'button';
+        button.textContent = 'Compartilhar';
+        button.addEventListener('click', () => start({ hwnd: w.hwnd, pid: w.pid }));
+        item.append(title, button);
+        list.append(item);
+      }
+    } catch (err) {
+      list.innerHTML = '';
+      const item = document.createElement('li');
+      const span = document.createElement('span');
+      span.className = 'notice';
+      span.textContent = err.message;
+      item.append(span);
+      list.append(item);
+    }
+  }
+
+  async function start(body) {
+    try {
+      render(await api('/api/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }));
+    } catch (err) {
+      $('notices').textContent = err.message;
+    }
+  }
+
+  async function stop() {
+    try { render(await api('/api/stop', { method: 'POST' })); } catch (err) { $('notices').textContent = err.message; }
+  }
+
+  $('test').addEventListener('click', () => start({ test: true }));
+  $('stop').addEventListener('click', stop);
+  $('refresh').addEventListener('click', loadWindows);
+
+  loadWindows();
+  refreshStatus();
+  polling = setInterval(refreshStatus, 2000);
+})();
+</script>
+</body>
+</html>

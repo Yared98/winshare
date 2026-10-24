@@ -1,0 +1,32 @@
+# Copie para config.toml e ajuste. Campos ausentes usam o padrão indicado.
+
+# Domínio público do link (sem https://). Padrão: "localhost".
+public_host = "winshare.exemplo.com.br"
+
+# Porta pública (0.0.0.0): só /s/<token>, /viewer e o WebSocket do espectador. Padrão: 8080.
+public_port = 8080
+
+# Porta de controle (127.0.0.1): /control e /api/*. Padrão: 7878.
+control_port = 7878
+
+# "external" (padrão): o tunnel roda no roteador e aponta para http://<IP-do-PC>:public_port.
+# "managed": o app sobe `cloudflared tunnel run` como processo filho (exige tunnel_name).
+# "none": sem tunnel, só acesso local.
+tunnel = "external"
+# tunnel_name = "winshare"
+
+# Senha opcional da sala. Sem a chave, a sala é aberta para quem tiver o link.
+# password = "troque-esta-senha"
+
+# Limite de espectadores simultâneos. Padrão: 10.
+max_viewers = 10
+
+# Faixa de portas UDP das conexões ICE (encaminhe no roteador). Padrão: 50000-50100.
+udp_port_min = 50000
+udp_port_max = 50100
+
+# Servidor TURN opcional (para quem não consegue conexão direta).
+# [turn]
+# url = "turn:turn.exemplo.com.br:3478"
+# username = "usuario"
+# credential = "senha"
