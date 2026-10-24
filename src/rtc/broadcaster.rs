@@ -167,6 +167,9 @@ fn run_video(
     let mut next = Instant::now();
     let mut index: u64 = 0;
     while !stop.load(Ordering::SeqCst) {
+        if index % TEST_FPS as u64 == 0 {
+            encoder.force_keyframe();
+        }
         let rgb = test_frame(index, TEST_WIDTH, TEST_HEIGHT);
         match encoder.encode_rgb(&rgb) {
             Ok(data) if !data.is_empty() => {

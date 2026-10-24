@@ -25,6 +25,11 @@ impl H264Encoder {
         })
     }
 
+    /// Força um IDR no próximo quadro (viewer novo ou PLI/FIR).
+    pub fn force_keyframe(&mut self) {
+        self.inner.force_intra_frame();
+    }
+
     /// Codifica um quadro RGB8 (`width * height * 3` bytes) e devolve os NALs em Annex B.
     pub fn encode_rgb(&mut self, rgb: &[u8]) -> Result<Vec<u8>> {
         anyhow::ensure!(
