@@ -80,6 +80,21 @@
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
   }
 
+  // Depois que o usuário liberou o som uma vez, as reconexões tocam com som. Se o navegador
+  // bloquear, toca mudo (a imagem nunca fica parada) e mostra o botão para ativar o som.
+  let soundOn = false;
+  function startPlayback() {
+    video.muted = !soundOn;
+    const attempt = video.play();
+    if (!attempt || !attempt.catch) return;
+    attempt.then(() => { if (soundOn) soundBox.hidden = true; }).catch(() => {
+      soundOn = false;
+      video.muted = true;
+      soundBox.hidden = false;
+      video.play().catch(() => {});
+    });
+  }
+
   function closePeer() {
     if (pc) { pc.close(); pc = null; }
   }
@@ -128,10 +143,7 @@
         stream.addTrack(event.track);
         video.srcObject = stream;
       }
-      const playing = video.play();
-      if (playing && playing.catch) {
-        playing.catch(() => { soundBox.hidden = false; });
-      }
+      startPlayback();
     };
     pc.onicecandidate = (event) => {
       if (event.candidate) {
@@ -200,14 +212,17 @@
   });
 
   document.getElementById('enable-sound').addEventListener('click', () => {
+    soundOn = true;
     video.muted = false;
     video.play().catch(() => {});
     soundBox.hidden = true;
+    muteButton.textContent = 'Mudo';
   });
 
   const muteButton = document.getElementById('mute');
   muteButton.addEventListener('click', () => {
     video.muted = !video.muted;
+    soundOn = !video.muted;
     muteButton.textContent = video.muted ? 'Som' : 'Mudo';
   });
 
@@ -215,6 +230,7 @@
   volume.addEventListener('input', () => {
     video.volume = Number(volume.value);
     video.muted = video.volume === 0;
+    soundOn = !video.muted;
     muteButton.textContent = video.muted ? 'Som' : 'Mudo';
   });
 
