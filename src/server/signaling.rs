@@ -1,7 +1,7 @@
 //! Sinalização WebSocket do espectador: oferta do servidor, resposta e candidatos ICE nos dois sentidos.
 //!
 //! Mensagens (JSON, campo `type`):
-//! - servidor -> navegador: `auth_required`, `offer` (sdp), `ice` (candidate), `error` (message)
+//! - servidor -> navegador: `auth_required`, `offer` (sdp + ice_servers), `ice` (candidate), `error` (message)
 //! - navegador -> servidor: `auth` (password), `answer` (sdp), `ice` (candidate)
 
 use std::sync::Arc;
@@ -18,6 +18,7 @@ use tracing::{debug, info, warn};
 
 use crate::rtc::peer::{Peer, PeerEvent};
 use crate::server::AppState;
+use crate::turn::IceServer;
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -47,7 +48,7 @@ pub async fn handle_viewer(socket: WebSocket, state: Arc<AppState>) {
     let (tx, rx) = socket.split();
     let (mut tx, mut rx) = (tx, rx);
 
-    let (slot, tracks, mut stop) = match state.join_viewer() {
+    let (slot, tracks, mut stop, ice_servers) = match state.join_viewer() {
         Ok(joined) => joined,
         Err(reason) => {
             send_error(&mut tx, reason).await;
@@ -72,7 +73,7 @@ pub async fn handle_viewer(socket: WebSocket, state: Arc<AppState>) {
         }
     };
 
-    let (peer, mut events) = match Peer::new(&state.config, udp_port, tracks).await {
+    let (peer, mut events) = match Peer::new(&ice_servers, udp_port, tracks).await {
         Ok(created) => created,
         Err(err) => {
             warn!(error = %format!("{err:#}"), "não consegui criar o peer");
@@ -82,7 +83,7 @@ pub async fn handle_viewer(socket: WebSocket, state: Arc<AppState>) {
         }
     };
 
-    run_session(&peer, &mut tx, &mut rx, &mut events, &mut stop).await;
+    run_session(&peer, &ice_servers, &mut tx, &mut rx, &mut events, &mut stop).await;
 
     peer.close().await;
     state.ports.release(udp_port);
@@ -91,6 +92,7 @@ pub async fn handle_viewer(socket: WebSocket, state: Arc<AppState>) {
 
 async fn run_session(
     peer: &Peer,
+    ice_servers: &[IceServer],
     tx: &mut Tx,
     rx: &mut Rx,
     events: &mut tokio::sync::mpsc::UnboundedReceiver<PeerEvent>,
@@ -104,7 +106,7 @@ async fn run_session(
             return;
         }
     };
-    if !send_json(tx, json!({ "type": "offer", "sdp": offer })).await {
+    if !send_json(tx, offer_message(&offer, ice_servers)).await {
         return;
     }
     info!("espectador conectado; oferta enviada");
@@ -218,8 +220,44 @@ async fn send_error(tx: &mut Tx, message: &str) {
     let _ = tx.close().await;
 }
 
+/// Mensagem `offer`: SDP e os servidores ICE (STUN + TURN) que o navegador deve usar.
+pub fn offer_message(sdp: &str, ice_servers: &[IceServer]) -> Value {
+    json!({ "type": "offer", "sdp": sdp, "ice_servers": ice_servers })
+}
+
 async fn send_json(tx: &mut Tx, value: Value) -> bool {
     tx.send(Message::Text(value.to_string().into()))
         .await
         .is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn offer_message_carries_ice_servers() {
+        let ice = vec![
+            IceServer {
+                urls: vec!["stun:stun.example:3478".to_owned()],
+                username: None,
+                credential: None,
+            },
+            IceServer {
+                urls: vec!["turn:turn.example:3478".to_owned()],
+                username: Some("usuario".to_owned()),
+                credential: Some("credencial".to_owned()),
+            },
+        ];
+        let msg = offer_message("v=0\r\n", &ice);
+        assert_eq!(msg["type"], "offer");
+        assert_eq!(msg["sdp"], "v=0\r\n");
+        let servers = msg["ice_servers"].as_array().expect("ice_servers é lista");
+        assert_eq!(servers.len(), 2);
+        assert_eq!(servers[0]["urls"][0], "stun:stun.example:3478");
+        assert!(servers[0].get("username").is_none());
+        assert_eq!(servers[1]["urls"][0], "turn:turn.example:3478");
+        assert_eq!(servers[1]["username"], "usuario");
+        assert_eq!(servers[1]["credential"], "credencial");
+    }
 }

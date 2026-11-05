@@ -21,6 +21,7 @@ use webrtc::media_stream::track_local::TrackLocal;
 use crate::config::{Config, TunnelMode};
 use crate::rtc::broadcaster::Broadcaster;
 use crate::rtc::peer::PortPool;
+use crate::turn::{IceServer, SharedIceServers};
 
 const VIEWER_HTML: &str = include_str!("../../web/viewer.html");
 
@@ -39,6 +40,8 @@ pub struct LiveSession {
     pub source: &'static str,
     /// Ao receber `true`, os WebSockets dos espectadores encerram.
     pub stop: watch::Sender<bool>,
+    /// Servidores ICE atuais (STUN + TURN); o TURN do Cloudflare é renovado em segundo plano.
+    pub ice_servers: SharedIceServers,
 }
 
 pub struct AppState {
@@ -75,10 +78,19 @@ impl AppState {
         }
     }
 
-    /// Reserva uma vaga e devolve as tracks e o canal de parada da transmissão atual.
+    /// Reserva uma vaga e devolve as tracks, o canal de parada e a lista ICE atual da transmissão.
+    #[allow(clippy::type_complexity)]
     pub fn join_viewer(
         self: &Arc<Self>,
-    ) -> Result<(ViewerSlot, Vec<Arc<dyn TrackLocal>>, watch::Receiver<bool>), &'static str> {
+    ) -> Result<
+        (
+            ViewerSlot,
+            Vec<Arc<dyn TrackLocal>>,
+            watch::Receiver<bool>,
+            Vec<IceServer>,
+        ),
+        &'static str,
+    > {
         let live = self.live.lock().expect("live poisoned");
         let session = live.as_ref().ok_or("a transmissão não está ativa")?;
         if session.broadcaster.ended() {
@@ -92,12 +104,18 @@ impl AppState {
                 (n < max).then_some(n + 1)
             })
             .map_err(|_| "limite de espectadores atingido")?;
+        let ice = session
+            .ice_servers
+            .lock()
+            .expect("ice poisoned")
+            .clone();
         Ok((
             ViewerSlot {
                 state: self.clone(),
             },
             session.broadcaster.tracks(),
             session.stop.subscribe(),
+            ice,
         ))
     }
 

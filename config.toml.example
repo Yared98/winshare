@@ -28,8 +28,20 @@ video_bitrate_kbps = 6000
 udp_port_min = 50000
 udp_port_max = 50100
 
-# Servidor TURN opcional (para quem não consegue conexão direta).
+# Servidor TURN opcional (para quem não consegue conexão direta). Vai ao navegador do espectador
+# junto com o STUN, na mensagem de oferta. Padrão: sem TURN.
 # [turn]
 # url = "turn:turn.exemplo.com.br:3478"
 # username = "usuario"
 # credential = "senha"
+
+# TURN efêmero do Cloudflare Realtime (opcional). Recomendado se o IP da WAN é CGNAT.
+# O app pede credenciais de 24 h ao iniciar a transmissão e renova a cada 6 h enquanto ela estiver
+# ativa. Se a chamada falhar, avisa no log e segue só com STUN/TURN estático.
+# Como criar, no painel da Cloudflare: Realtime → TURN → criar uma TURN key. Copie o "Key ID"
+# para key_id. Crie um API token com permissão para o Realtime TURN (confira o nome exato da
+# permissão no painel) e cole em api_token. O api_token fica só no servidor: nunca vai ao
+# espectador nem aparece em logs. Não versione este arquivo com os valores reais.
+# [turn_cloudflare]
+# key_id = "colar-o-key-id-aqui"
+# api_token = "colar-o-token-aqui"

@@ -132,9 +132,15 @@
     retryTimer = setTimeout(connect, RETRY_MS);
   }
 
-  async function handleOffer(sdp) {
+  // Servidores ICE (STUN + TURN) enviados pelo servidor. Sem o campo, usa só o STUN padrão.
+  function iceServersFrom(list) {
+    if (!Array.isArray(list) || list.length === 0) return [{ urls: 'stun:stun.l.google.com:19302' }];
+    return list;
+  }
+
+  async function handleOffer(sdp, iceServers) {
     closePeer();
-    pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+    pc = new RTCPeerConnection({ iceServers: iceServersFrom(iceServers) });
     pc.ontrack = (event) => {
       if (event.streams && event.streams[0]) {
         video.srcObject = event.streams[0];
@@ -181,7 +187,7 @@
           break;
         case 'offer':
           passwordForm.hidden = true;
-          try { await handleOffer(msg.sdp); } catch (err) { showMessage('Falha ao negociar a conexão.'); }
+          try { await handleOffer(msg.sdp, msg.ice_servers); } catch (err) { showMessage('Falha ao negociar a conexão.'); }
           break;
         case 'ice':
           if (pc && msg.candidate) {

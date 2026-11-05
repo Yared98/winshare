@@ -1,7 +1,7 @@
 //! API de controle (somente loopback): listar janelas, iniciar, parar e consultar o estado.
 
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 
 use axum::Json;
 use axum::Router;
@@ -15,6 +15,7 @@ use tracing::{info, warn};
 
 use crate::rtc::broadcaster::Broadcaster;
 use crate::server::{AppState, LiveSession};
+use crate::turn;
 use crate::windows_list::{WindowInfo, list_visible_windows};
 
 const CONTROL_HTML: &str = include_str!("../../web/control.html");
@@ -77,6 +78,22 @@ async fn start(
     State(state): State<Arc<AppState>>,
     Json(request): Json<StartRequest>,
 ) -> Result<Json<StatusBody>, ApiError> {
+    // Checagem rápida antes da busca de TURN, para não gastar a chamada à Cloudflare à toa.
+    let busy = state
+        .live
+        .lock()
+        .expect("live poisoned")
+        .as_ref()
+        .is_some_and(|session| !session.broadcaster.ended());
+    if busy {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "já existe uma transmissão ativa",
+        ));
+    }
+    // A busca é assíncrona: feita antes do lock, que é std e não pode atravessar um await.
+    let ice = turn::initial_ice_servers(&state.config).await;
+
     let mut live = state.live.lock().expect("live poisoned");
     if live.as_ref().is_some_and(|session| !session.broadcaster.ended()) {
         return Err(ApiError::new(
@@ -110,10 +127,13 @@ async fn start(
     };
 
     let (stop, _) = watch::channel(false);
+    let ice_servers = Arc::new(Mutex::new(ice));
+    turn::spawn_refresh(state.config.clone(), ice_servers.clone(), stop.subscribe());
     *live = Some(LiveSession {
         broadcaster,
         source,
         stop,
+        ice_servers,
     });
     info!(source, "transmissão iniciada");
     drop(live);

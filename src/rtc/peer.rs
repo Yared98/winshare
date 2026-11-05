@@ -11,7 +11,7 @@ use tracing::{debug, info};
 use webrtc::media_stream::track_local::TrackLocal;
 use webrtc::peer_connection::{
     PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfigurationBuilder,
-    RTCIceServer, RTCPeerConnectionIceEvent, RTCPeerConnectionState,
+    RTCPeerConnectionIceEvent, RTCPeerConnectionState,
 };
 
 use ::rtc::interceptor::Registry;
@@ -21,10 +21,8 @@ use ::rtc::peer_connection::sdp::RTCSessionDescription;
 use ::rtc::peer_connection::transport::RTCIceCandidateInit;
 use ::rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 
-use crate::config::{Config, TurnConfig};
 use crate::rtc::broadcaster::{audio_codec, video_codec};
-
-const DEFAULT_STUN: &str = "stun:stun.l.google.com:19302";
+use crate::turn::{IceServer, to_rtc};
 
 /// Evento de um peer que o sinalizador precisa repassar ao navegador.
 pub enum PeerEvent {
@@ -100,7 +98,7 @@ pub struct Peer {
 impl Peer {
     /// Cria o peer, adiciona as tracks compartilhadas e devolve o canal de eventos.
     pub async fn new(
-        config: &Config,
+        ice_servers: &[IceServer],
         udp_port: u16,
         tracks: Vec<Arc<dyn TrackLocal>>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<PeerEvent>)> {
@@ -115,7 +113,7 @@ impl Peer {
             .context("interceptors RTP não registrados")?;
 
         let configuration = RTCConfigurationBuilder::new()
-            .with_ice_servers(ice_servers(config.turn.as_ref()))
+            .with_ice_servers(to_rtc(ice_servers))
             .build();
 
         let (tx, rx) = mpsc::unbounded_channel();
@@ -178,25 +176,12 @@ impl Peer {
     }
 }
 
-fn ice_servers(turn: Option<&TurnConfig>) -> Vec<RTCIceServer> {
-    let mut servers = vec![RTCIceServer {
-        urls: vec![DEFAULT_STUN.to_owned()],
-        ..Default::default()
-    }];
-    if let Some(turn) = turn {
-        servers.push(RTCIceServer {
-            urls: vec![turn.url.clone()],
-            username: turn.username.clone(),
-            credential: turn.credential.clone(),
-        });
-    }
-    servers
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
     use crate::rtc::broadcaster::Broadcaster;
+    use crate::turn::build_ice_servers;
 
     #[test]
     fn port_pool_hands_out_distinct_free_ports() {
@@ -224,7 +209,8 @@ mod tests {
         let config = Config::default();
         let broadcaster = Broadcaster::start_test_source(tokio::runtime::Handle::current(), 6_000_000)
             .expect("fonte de teste");
-        let (peer, _events) = Peer::new(&config, 50_230, broadcaster.tracks())
+        let ice = build_ice_servers(&config, None);
+        let (peer, _events) = Peer::new(&ice, 50_230, broadcaster.tracks())
             .await
             .expect("peer");
         let sdp = peer.create_offer().await.expect("offer");

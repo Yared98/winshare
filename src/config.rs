@@ -1,3 +1,4 @@
+use std::fmt;
 use std::net::SocketAddr;
 use std::path::Path;
 
@@ -27,6 +28,25 @@ pub struct TurnConfig {
     pub credential: String,
 }
 
+/// TURN efêmero do Cloudflare Realtime (`[turn_cloudflare]`). O `api_token` nunca sai do servidor.
+#[derive(Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TurnCloudflareConfig {
+    /// Identificador da TURN key criada no painel (Realtime → TURN).
+    pub key_id: String,
+    /// Token de API com permissão para gerar credenciais TURN.
+    pub api_token: String,
+}
+
+impl fmt::Debug for TurnCloudflareConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TurnCloudflareConfig")
+            .field("key_id", &self.key_id)
+            .field("api_token", &"<redigido>")
+            .finish()
+    }
+}
+
 /// Configuração carregada de `config.toml`. Campos ausentes usam o padrão.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -50,6 +70,8 @@ pub struct Config {
     pub udp_port_min: u16,
     pub udp_port_max: u16,
     pub turn: Option<TurnConfig>,
+    /// TURN efêmero do Cloudflare Realtime, renovado a cada 6 h durante a transmissão.
+    pub turn_cloudflare: Option<TurnCloudflareConfig>,
 }
 
 impl Default for Config {
@@ -66,6 +88,7 @@ impl Default for Config {
             udp_port_min: 50000,
             udp_port_max: 50100,
             turn: None,
+            turn_cloudflare: None,
         }
     }
 }
@@ -108,6 +131,11 @@ impl Config {
         }
         if self.password.as_deref() == Some("") {
             bail!("password não pode ser vazia (remova a chave para desativar a senha)");
+        }
+        if let Some(cf) = &self.turn_cloudflare {
+            if cf.key_id.trim().is_empty() || cf.api_token.trim().is_empty() {
+                bail!("turn_cloudflare exige key_id e api_token preenchidos");
+            }
         }
         Ok(())
     }
@@ -185,5 +213,45 @@ mod tests {
     #[test]
     fn control_addr_is_loopback() {
         assert!(Config::default().control_addr().ip().is_loopback());
+    }
+
+    #[test]
+    fn parses_turn_cloudflare_section() {
+        let c: Config = toml::from_str(
+            r#"
+            [turn_cloudflare]
+            key_id = "abc123"
+            api_token = "segredo"
+            "#,
+        )
+        .unwrap();
+        let cf = c.turn_cloudflare.as_ref().unwrap();
+        assert_eq!(cf.key_id, "abc123");
+        assert_eq!(cf.api_token, "segredo");
+        c.validate().unwrap();
+    }
+
+    #[test]
+    fn rejects_empty_turn_cloudflare_fields() {
+        let c: Config = toml::from_str(
+            r#"
+            [turn_cloudflare]
+            key_id = "abc123"
+            api_token = "  "
+            "#,
+        )
+        .unwrap();
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn turn_cloudflare_debug_hides_api_token() {
+        let cf = TurnCloudflareConfig {
+            key_id: "abc123".to_owned(),
+            api_token: "segredo-do-token".to_owned(),
+        };
+        let text = format!("{cf:?}");
+        assert!(text.contains("abc123"));
+        assert!(!text.contains("segredo-do-token"));
     }
 }
