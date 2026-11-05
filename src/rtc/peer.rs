@@ -124,7 +124,10 @@ impl Peer {
             .with_media_engine(media)
             .with_interceptor_registry(registry)
             .with_handler(Arc::new(Handler { tx }))
-            .with_udp_addrs(vec![SocketAddr::from(([0, 0, 0, 0], udp_port))])
+            .with_udp_addrs(vec![
+                SocketAddr::from(([0, 0, 0, 0], udp_port)),
+                SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, udp_port)),
+            ])
             .build()
             .await
             .context("falha ao criar a conexão WebRTC")?;
