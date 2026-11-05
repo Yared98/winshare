@@ -84,6 +84,30 @@
     if (pc) { pc.close(); pc = null; }
   }
 
+  let lastFrames = -1;
+  let stalledTicks = 0;
+  let disconnectTimer = null;
+
+  // Reconexão completa: derruba WS e peer, e tenta de novo.
+  function reconnect() {
+    if (ws) { ws.onclose = null; try { ws.close(); } catch { /* já fechado */ } ws = null; }
+    scheduleRetry();
+  }
+
+  // Vigia: se o vídeo não avança por ~6 s com a conexão "conectada", reconecta.
+  setInterval(async () => {
+    send({ type: 'ping' }); // mantém o WebSocket vivo atrás do Cloudflare
+    if (!pc || pc.connectionState !== 'connected') { stalledTicks = 0; lastFrames = -1; return; }
+    let frames = 0;
+    try {
+      const stats = await pc.getStats();
+      stats.forEach((r) => { if (r.type === 'inbound-rtp' && r.kind === 'video') frames = r.framesDecoded || 0; });
+    } catch { return; }
+    if (frames > lastFrames) { lastFrames = frames; stalledTicks = 0; return; }
+    stalledTicks += 1;
+    if (stalledTicks >= 3) { stalledTicks = 0; lastFrames = -1; reconnect(); }
+  }, 2000);
+
   function scheduleRetry() {
     closePeer();
     if (retries >= MAX_RETRIES) { setStatus('Conexão perdida.'); return; }
@@ -120,8 +144,10 @@
     };
     pc.onconnectionstatechange = () => {
       if (!pc) return;
+      clearTimeout(disconnectTimer);
       if (pc.connectionState === 'connected') { retries = 0; setStatus('Ao vivo'); }
-      if (pc.connectionState === 'failed') scheduleRetry();
+      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') reconnect();
+      if (pc.connectionState === 'disconnected') disconnectTimer = setTimeout(reconnect, 4000);
     };
     await pc.setRemoteDescription({ type: 'offer', sdp });
     const answer = await pc.createAnswer();

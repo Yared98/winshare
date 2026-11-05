@@ -26,7 +26,7 @@ use ::rtc::rtp_transceiver::rtp_sender::{
 };
 
 use crate::capture::audio::{AudioCapture, CHANNELS, SAMPLE_RATE, SineSource};
-use crate::capture::video::{WindowCapture, WindowState, window_pid};
+use crate::capture::video::{CapturedFrame, WindowCapture, WindowState, window_pid};
 use crate::encode::h264::{H264Encoder, even_size};
 use crate::encode::opus::OpusEncoder;
 
@@ -44,6 +44,7 @@ const VIDEO_FPS: f32 = 30.0;
 /// Duração de quadro usada quando o WGC ainda não deu dois carimbos.
 const FALLBACK_FRAME: Duration = Duration::from_micros(33_333);
 const WINDOW_POLL: Duration = Duration::from_millis(100);
+const IDLE_REPEAT: Duration = Duration::from_millis(200);
 pub const NOTICE_WINDOW_CLOSED: &str = "janela fechada";
 pub const NOTICE_MINIMIZED: &str =
     "janela minimizada: o Windows não envia quadros; restaure a janela para continuar";
@@ -354,6 +355,8 @@ fn run_window_video(
 ) {
     let mut encoder: Option<H264Encoder> = None;
     let mut last_stamp: Option<i64> = None;
+    let mut last_frame: Option<CapturedFrame> = None;
+    let mut last_sent = Instant::now();
     while !stop.load(Ordering::SeqCst) {
         match capture.state() {
             WindowState::Closed => {
@@ -364,9 +367,27 @@ fn run_window_video(
             WindowState::Minimized => status.set_minimized(true),
             WindowState::Running => status.set_minimized(false),
         }
-        let Some(frame) = capture.next_frame(WINDOW_POLL) else {
-            continue;
+        // O WGC só entrega quadros quando a janela muda. Sem novidade, reenvia o último quadro
+        // (ao menos a cada IDLE_REPEAT, ou na hora se há keyframe pedido), senão a imagem congela
+        // e um espectador novo nunca recebe um IDR.
+        let frame = match capture.next_frame(WINDOW_POLL) {
+            Some(frame) => frame,
+            None => match last_frame.take() {
+                Some(mut frame)
+                    if last_sent.elapsed() >= IDLE_REPEAT || keyframe.load(Ordering::SeqCst) =>
+                {
+                    let elapsed_100ns = (last_sent.elapsed().as_nanos() / 100) as i64;
+                    frame.timestamp_100ns = last_stamp.unwrap_or(frame.timestamp_100ns) + elapsed_100ns;
+                    frame.at = Instant::now();
+                    frame
+                }
+                other => {
+                    last_frame = other;
+                    continue;
+                }
+            },
         };
+        last_sent = Instant::now();
         let (width, height) = even_size(frame.width, frame.height);
         if frame.width < 2 || frame.height < 2 {
             continue;
@@ -397,6 +418,7 @@ fn run_window_video(
                 break;
             }
         }
+        last_frame = Some(frame);
     }
     let dropped = capture.dropped_frames();
     if dropped > 0 {
