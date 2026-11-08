@@ -5,6 +5,8 @@ pub mod config;
 pub mod encode;
 pub mod rtc;
 pub mod server;
+pub mod supervisor;
+pub mod tray;
 pub mod tunnel;
 pub mod turn;
 pub mod windows_list;
