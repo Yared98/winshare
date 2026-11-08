@@ -103,6 +103,7 @@
   let stalledTicks = 0;
   let disconnectTimer = null;
   let lastReason = 'iniciou';
+  let totalReconnects = 0; // não zera ao reconectar, ao contrário de `retries`
   let prevStatsBytes = -1;
   let prevStatsTime = 0;
 
@@ -208,7 +209,7 @@
       fps,
       kbps,
       path,
-      reconnects: retries,
+      reconnects: totalReconnects,
       last_reason: lastReason,
     });
   }, 5000);
@@ -220,6 +221,7 @@
     closePeer();
     if (retries >= MAX_RETRIES) { setStatus('Conexão perdida.'); return; }
     retries += 1;
+    totalReconnects += 1;
     setStatus(`Reconectando… (${retries})`);
     clearTimeout(retryTimer);
     retryTimer = setTimeout(connect, RETRY_MS);

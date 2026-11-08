@@ -23,6 +23,10 @@ use crate::server::{AppState, ViewerKind};
 use crate::turn::IceServer;
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(30);
+/// Limite de uma mensagem do navegador (a answer SDP tem alguns KB).
+const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+/// Limite da mensagem `stats`, que vem da internet e vai para o painel.
+const MAX_STATS_BYTES: usize = 4 * 1024;
 
 type Tx = SplitSink<WebSocket, Message>;
 type Rx = SplitStream<WebSocket>;
@@ -182,10 +186,6 @@ pub async fn handle_viewer(
     let (_, masked_ip) = client_ip;
     let started_at = Instant::now();
 
-    if kind == ViewerKind::Public {
-        state.register_viewer(viewer_id.clone());
-    }
-
     let (tx, rx) = socket.split();
     let (mut tx, mut rx) = (tx, rx);
 
@@ -209,11 +209,12 @@ pub async fn handle_viewer(
                 Ok(()) => {}
                 Err(reason) => {
                     log_disconnect(kind, &viewer_id, &masked_ip, reason, started_at);
-                    state.remove_viewer(&viewer_id);
                     return;
                 }
             }
         }
+        // Só entra na lista do painel depois de passar pela senha.
+        state.register_viewer(viewer_id.clone());
     }
 
     let udp_port = match state.ports.acquire() {
@@ -355,8 +356,9 @@ async fn run_session(
             },
             message = rx.next() => match message {
                 Some(Ok(Message::Text(text))) => {
-                    if text.len() > 4096 {
-                        debug!("mensagem de cliente excedeu limite de 4 KB");
+                    // A resposta SDP passa de 4 KB; o limite geral é folgado e o de `stats` é 4 KB.
+                    if text.len() > MAX_MESSAGE_BYTES {
+                        debug!("mensagem de cliente excedeu o limite");
                         continue;
                     }
                     handle_client_text(peer, text.as_str(), state, viewer_id, kind, &mut last_keyframe).await;
@@ -428,7 +430,7 @@ async fn handle_client_text(
                 state.request_keyframe();
             }
         }
-        "stats" => {
+        "stats" if text.len() <= MAX_STATS_BYTES => {
             if kind == ViewerKind::Public {
                 if let Some(stats) = sanitize_stats(&value) {
                     state.update_viewer_stats(viewer_id, stats);
