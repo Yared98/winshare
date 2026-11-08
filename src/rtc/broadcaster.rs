@@ -4,8 +4,9 @@
 //! Fontes: a janela escolhida (WGC + Process Loopback) ou a fonte de teste (vídeo animado + tom).
 //! Vídeo e áudio carimbam os quadros com `Instant` do mesmo processo, então usam um relógio comum.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -21,7 +22,7 @@ use ::rtc::media_stream::MediaStreamTrack;
 use ::rtc::peer_connection::configuration::media_engine::{MIME_TYPE_H264, MIME_TYPE_OPUS};
 use ::rtc::rtp_transceiver::PayloadType;
 use ::rtc::rtp_transceiver::rtp_sender::{
-    RTCRtpCodec, RTCRtpCodecParameters, RTCRtpCodingParameters, RTCRtpEncodingParameters,
+    RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters, RTCRtpCodingParameters, RTCRtpEncodingParameters,
     RtpCodecKind,
 };
 
@@ -29,6 +30,7 @@ use crate::capture::audio::{AudioCapture, CHANNELS, SAMPLE_RATE, SineSource};
 use crate::capture::video::{CapturedFrame, WindowCapture, WindowState, window_pid};
 use crate::encode::h264::{H264Encoder, even_size};
 use crate::encode::opus::OpusEncoder;
+use crate::rtc::bitrate::{BitrateController, StreamHealth};
 
 /// Payload types negociados (iguais em todos os peers, pois o MediaEngine é o mesmo).
 pub const VIDEO_PAYLOAD_TYPE: PayloadType = 102;
@@ -58,7 +60,24 @@ pub fn video_codec() -> RTCRtpCodecParameters {
             channels: 0,
             sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
                 .to_owned(),
-            rtcp_feedback: vec![],
+            rtcp_feedback: vec![
+                RTCPFeedback {
+                    typ: "goog-remb".to_owned(),
+                    parameter: "".to_owned(),
+                },
+                RTCPFeedback {
+                    typ: "ccm".to_owned(),
+                    parameter: "fir".to_owned(),
+                },
+                RTCPFeedback {
+                    typ: "nack".to_owned(),
+                    parameter: "".to_owned(),
+                },
+                RTCPFeedback {
+                    typ: "nack".to_owned(),
+                    parameter: "pli".to_owned(),
+                },
+            ],
         },
         payload_type: VIDEO_PAYLOAD_TYPE,
         ..Default::default()
@@ -139,8 +158,69 @@ pub struct Broadcaster {
     video: Arc<TrackLocalStaticSample>,
     audio: Arc<TrackLocalStaticSample>,
     stop: Arc<AtomicBool>,
-    keyframe: Arc<AtomicBool>,
+    shared: Arc<BroadcasterShared>,
     status: Arc<SourceStatus>,
+}
+
+static NEXT_BROADCASTER_ID: AtomicU64 = AtomicU64::new(1);
+static BROADCASTERS: Mutex<Option<HashMap<u64, Weak<BroadcasterShared>>>> = Mutex::new(None);
+
+pub fn get_broadcaster(id: u64) -> Option<Arc<BroadcasterShared>> {
+    let guard = BROADCASTERS.lock().unwrap_or_else(PoisonError::into_inner);
+    guard.as_ref().and_then(|map| map.get(&id)).and_then(|w| w.upgrade())
+}
+
+fn register_broadcaster(id: u64, weak: Weak<BroadcasterShared>) {
+    let mut guard = BROADCASTERS.lock().unwrap_or_else(PoisonError::into_inner);
+    let map = guard.get_or_insert_with(HashMap::new);
+    map.insert(id, weak);
+}
+
+fn unregister_broadcaster(id: u64) {
+    let mut guard = BROADCASTERS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(map) = guard.as_mut() {
+        map.remove(&id);
+    }
+}
+
+pub struct BroadcasterShared {
+    pub id: u64,
+    pub keyframe: Arc<AtomicBool>,
+    pub last_keyframe_request: Mutex<Instant>,
+    pub bitrate: Arc<Mutex<BitrateController>>,
+    pub keyframe_interval: Duration,
+}
+
+impl BroadcasterShared {
+    /// Pede um keyframe no próximo quadro (viewer novo ou PLI/FIR).
+    /// No máximo 1 a cada 500 ms (no total).
+    pub fn request_keyframe(&self) {
+        let now = Instant::now();
+        let mut last = self.last_keyframe_request.lock().unwrap_or_else(PoisonError::into_inner);
+        if now.duration_since(*last) >= Duration::from_millis(500) {
+            *last = now;
+            self.keyframe.store(true, Ordering::SeqCst);
+        }
+    }
+
+    pub fn report_loss(&self, peer_id: u64, loss_pct: f64) {
+        let mut b = self.bitrate.lock().unwrap_or_else(PoisonError::into_inner);
+        b.update_loss(peer_id, loss_pct, Instant::now());
+    }
+
+    pub fn add_peer(&self, peer_id: u64) {
+        let mut b = self.bitrate.lock().unwrap_or_else(PoisonError::into_inner);
+        b.add_peer(peer_id);
+    }
+
+    pub fn remove_peer(&self, peer_id: u64) {
+        let mut b = self.bitrate.lock().unwrap_or_else(PoisonError::into_inner);
+        b.remove_peer(peer_id, Instant::now());
+    }
+
+    pub fn health(&self) -> StreamHealth {
+        self.bitrate.lock().unwrap_or_else(PoisonError::into_inner).health()
+    }
 }
 
 /// Fonte de vídeo de uma transmissão.
@@ -164,7 +244,7 @@ struct VideoJob {
     input: VideoInput,
     bitrate_bps: u32,
     stop: Arc<AtomicBool>,
-    keyframe: Arc<AtomicBool>,
+    shared: Arc<BroadcasterShared>,
     status: Arc<SourceStatus>,
 }
 
@@ -193,12 +273,33 @@ impl Broadcaster {
     fn start(handle: Handle, video_input: VideoInput, audio_input: AudioInput, bitrate_bps: u32) -> Result<Self> {
         let video_ssrc: u32 = rand::random();
         let audio_ssrc: u32 = rand::random();
+
+        let cfg = crate::config::last_loaded();
+        let (min_kbps, kf_secs) = cfg
+            .as_ref()
+            .map(|c| (c.video_min_bitrate_kbps, c.keyframe_interval_secs))
+            .unwrap_or_else(|| (800.min(bitrate_bps / 1000), 5));
+        let max_kbps = (bitrate_bps / 1000).max(min_kbps);
+        let keyframe_interval = Duration::from_secs(kf_secs as u64);
+        let bitrate_controller = BitrateController::new(min_kbps, max_kbps);
+
+        let id = NEXT_BROADCASTER_ID.fetch_add(1, Ordering::SeqCst);
+        let shared = Arc::new(BroadcasterShared {
+            id,
+            keyframe: Arc::new(AtomicBool::new(false)),
+            last_keyframe_request: Mutex::new(Instant::now() - Duration::from_secs(1)),
+            bitrate: Arc::new(Mutex::new(bitrate_controller)),
+            keyframe_interval,
+        });
+        register_broadcaster(id, Arc::downgrade(&shared));
+
+        let video_track_label = format!("screencast-video-{id}");
         let video = Arc::new(TrackLocalStaticSample::new(
             Instant::now(),
             MediaStreamTrack::new(
                 "screencast-stream".to_owned(),
-                "screencast-video".to_owned(),
-                "screencast-video".to_owned(),
+                video_track_label.clone(),
+                video_track_label,
                 RtpCodecKind::Video,
                 vec![encoding(video_ssrc, video_codec())],
             ),
@@ -215,7 +316,6 @@ impl Broadcaster {
         )?);
 
         let stop = Arc::new(AtomicBool::new(false));
-        let keyframe = Arc::new(AtomicBool::new(false));
         let status = Arc::new(SourceStatus::default());
 
         let job = VideoJob {
@@ -225,7 +325,7 @@ impl Broadcaster {
             input: video_input,
             bitrate_bps,
             stop: stop.clone(),
-            keyframe: keyframe.clone(),
+            shared: shared.clone(),
             status: status.clone(),
         };
         thread::Builder::new()
@@ -245,7 +345,7 @@ impl Broadcaster {
             video,
             audio,
             stop,
-            keyframe,
+            shared,
             status,
         })
     }
@@ -258,9 +358,15 @@ impl Broadcaster {
         ]
     }
 
+    /// Retorna as métricas de saúde da transmissão (taxa-alvo e pior perda atual).
+    pub fn health(&self) -> StreamHealth {
+        self.shared.health()
+    }
+
     /// Pede um keyframe no próximo quadro (viewer novo ou PLI/FIR).
+    /// Throttle: no máximo 1 a cada 500 ms (no total).
     pub fn request_keyframe(&self) {
-        self.keyframe.store(true, Ordering::SeqCst);
+        self.shared.request_keyframe();
     }
 
     /// `true` quando a fonte encerrou a transmissão (ex.: janela fechada).
@@ -280,6 +386,7 @@ impl Broadcaster {
 impl Drop for Broadcaster {
     fn drop(&mut self) {
         self.stop();
+        unregister_broadcaster(self.shared.id);
     }
 }
 
@@ -291,13 +398,13 @@ fn run_video(job: VideoJob) {
         input,
         bitrate_bps,
         stop,
-        keyframe,
+        shared,
         status,
     } = job;
     match input {
-        VideoInput::Test => run_test_video(&handle, &track, ssrc, bitrate_bps, &stop, &keyframe),
+        VideoInput::Test => run_test_video(&handle, &track, ssrc, bitrate_bps, &stop, &shared),
         VideoInput::Window(capture) => {
-            run_window_video(&handle, &track, ssrc, capture, bitrate_bps, &stop, &keyframe, &status)
+            run_window_video(&handle, &track, ssrc, capture, bitrate_bps, &stop, &shared, &status)
         }
     }
     debug!("thread de vídeo encerrada");
@@ -307,11 +414,13 @@ fn run_test_video(
     handle: &Handle,
     track: &TrackLocalStaticSample,
     ssrc: u32,
-    bitrate_bps: u32,
+    initial_bitrate_bps: u32,
     stop: &AtomicBool,
-    keyframe: &AtomicBool,
+    shared: &BroadcasterShared,
 ) {
-    let mut encoder = match H264Encoder::new(TEST_WIDTH, TEST_HEIGHT, bitrate_bps, TEST_FPS as f32) {
+    let keyframe_interval = shared.keyframe_interval;
+    let mut current_bitrate_bps = initial_bitrate_bps;
+    let mut encoder = match H264Encoder::with_keyframe_interval(TEST_WIDTH, TEST_HEIGHT, current_bitrate_bps, TEST_FPS as f32, keyframe_interval) {
         Ok(encoder) => encoder,
         Err(err) => {
             error!(error = %format!("{err:#}"), "encoder de vídeo não iniciou");
@@ -322,7 +431,28 @@ fn run_test_video(
     let mut next = Instant::now();
     let mut index: u64 = 0;
     while !stop.load(Ordering::SeqCst) {
-        if keyframe.swap(false, Ordering::SeqCst) {
+        let now = Instant::now();
+        let target_kbps = {
+            let mut b = shared.bitrate.lock().unwrap_or_else(PoisonError::into_inner);
+            b.tick(now);
+            b.target_kbps()
+        };
+        let target_bps = target_kbps * 1000;
+        if target_bps != current_bitrate_bps {
+            info!(old_kbps = current_bitrate_bps / 1000, new_kbps = target_kbps, "taxa de vídeo ajustada; recriando encoder H.264");
+            current_bitrate_bps = target_bps;
+            match H264Encoder::with_keyframe_interval(TEST_WIDTH, TEST_HEIGHT, current_bitrate_bps, TEST_FPS as f32, keyframe_interval) {
+                Ok(mut new_encoder) => {
+                    new_encoder.force_keyframe();
+                    encoder = new_encoder;
+                }
+                Err(err) => {
+                    error!(error = %format!("{err:#}"), "falha ao recriar encoder com nova taxa");
+                }
+            }
+        }
+
+        if shared.keyframe.swap(false, Ordering::SeqCst) {
             encoder.force_keyframe();
         }
         let bgra = test_frame(index, TEST_WIDTH, TEST_HEIGHT);
@@ -348,11 +478,13 @@ fn run_window_video(
     track: &TrackLocalStaticSample,
     ssrc: u32,
     mut capture: WindowCapture,
-    bitrate_bps: u32,
+    initial_bitrate_bps: u32,
     stop: &AtomicBool,
-    keyframe: &AtomicBool,
+    shared: &BroadcasterShared,
     status: &SourceStatus,
 ) {
+    let keyframe_interval = shared.keyframe_interval;
+    let mut current_bitrate_bps = initial_bitrate_bps;
     let mut encoder: Option<H264Encoder> = None;
     let mut last_stamp: Option<i64> = None;
     let mut last_frame: Option<CapturedFrame> = None;
@@ -367,6 +499,20 @@ fn run_window_video(
             WindowState::Minimized => status.set_minimized(true),
             WindowState::Running => status.set_minimized(false),
         }
+
+        let now = Instant::now();
+        let target_kbps = {
+            let mut b = shared.bitrate.lock().unwrap_or_else(PoisonError::into_inner);
+            b.tick(now);
+            b.target_kbps()
+        };
+        let target_bps = target_kbps * 1000;
+        let bitrate_changed = target_bps != current_bitrate_bps;
+        if bitrate_changed {
+            info!(old_kbps = current_bitrate_bps / 1000, new_kbps = target_kbps, "taxa de vídeo ajustada; recriando encoder H.264");
+            current_bitrate_bps = target_bps;
+        }
+
         // O WGC só entrega quadros quando a janela muda. Sem novidade, reenvia o último quadro
         // (ao menos a cada IDLE_REPEAT, ou na hora se há keyframe pedido), senão a imagem congela
         // e um espectador novo nunca recebe um IDR.
@@ -374,7 +520,7 @@ fn run_window_video(
             Some(frame) => frame,
             None => match last_frame.take() {
                 Some(mut frame)
-                    if last_sent.elapsed() >= IDLE_REPEAT || keyframe.load(Ordering::SeqCst) =>
+                    if last_sent.elapsed() >= IDLE_REPEAT || shared.keyframe.load(Ordering::SeqCst) =>
                 {
                     let elapsed_100ns = (last_sent.elapsed().as_nanos() / 100) as i64;
                     frame.timestamp_100ns = last_stamp.unwrap_or(frame.timestamp_100ns) + elapsed_100ns;
@@ -392,11 +538,14 @@ fn run_window_video(
         if frame.width < 2 || frame.height < 2 {
             continue;
         }
-        if encoder.as_ref().map(H264Encoder::dimensions) != Some((width, height)) {
-            // Primeiro quadro ou janela redimensionada: encoder novo, sempre com IDR.
-            info!(width, height, "dimensões de captura: (re)criando encoder H.264");
-            match H264Encoder::new(width, height, bitrate_bps, VIDEO_FPS) {
-                Ok(new_encoder) => encoder = Some(new_encoder),
+        if encoder.as_ref().map(H264Encoder::dimensions) != Some((width, height)) || bitrate_changed {
+            // Primeiro quadro, janela redimensionada ou taxa alterada: encoder novo, sempre com IDR.
+            info!(width, height, bitrate_kbps = current_bitrate_bps / 1000, "dimensões ou taxa de captura: (re)criando encoder H.264");
+            match H264Encoder::with_keyframe_interval(width, height, current_bitrate_bps, VIDEO_FPS, keyframe_interval) {
+                Ok(mut new_encoder) => {
+                    new_encoder.force_keyframe();
+                    encoder = Some(new_encoder);
+                }
                 Err(err) => {
                     status.end(format!("encoder de vídeo: {err:#}"));
                     break;
@@ -404,7 +553,7 @@ fn run_window_video(
             }
         }
         let Some(enc) = encoder.as_mut() else { continue };
-        if keyframe.swap(false, Ordering::SeqCst) {
+        if shared.keyframe.swap(false, Ordering::SeqCst) {
             enc.force_keyframe();
         }
         let duration = frame_duration(last_stamp, frame.timestamp_100ns);

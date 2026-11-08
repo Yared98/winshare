@@ -1,10 +1,19 @@
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::Mutex;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use tracing::warn;
+
+static LAST_LOADED: Mutex<Option<Config>> = Mutex::new(None);
+
+/// Retorna a última configuração carregada com sucesso por `Config::load`, se houver.
+pub fn last_loaded() -> Option<Config> {
+    LAST_LOADED.lock().ok().and_then(|g| g.clone())
+}
 
 /// Modo do tunnel que expõe a porta pública à internet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
@@ -64,8 +73,12 @@ pub struct Config {
     pub password: Option<String>,
     /// Limite de espectadores simultâneos.
     pub max_viewers: usize,
-    /// Taxa-alvo do vídeo em kbps (padrão 6000 = 6 Mbps).
+    /// Taxa-teto do vídeo em kbps (padrão 3000 = 3 Mbps).
     pub video_bitrate_kbps: u32,
+    /// Taxa mínima do vídeo em kbps (padrão 800 = 800 kbps, validar < teto e >= 300).
+    pub video_min_bitrate_kbps: u32,
+    /// Intervalo entre keyframes forçados em segundos (padrão 5, faixa 1..=30).
+    pub keyframe_interval_secs: u32,
     /// Faixa de portas UDP para as conexões ICE (encaminhar no roteador).
     pub udp_port_min: u16,
     pub udp_port_max: u16,
@@ -84,7 +97,9 @@ impl Default for Config {
             tunnel_name: None,
             password: None,
             max_viewers: 10,
-            video_bitrate_kbps: 6000,
+            video_bitrate_kbps: 3000,
+            video_min_bitrate_kbps: 800,
+            keyframe_interval_secs: 5,
             udp_port_min: 50000,
             udp_port_max: 50100,
             turn: None,
@@ -94,6 +109,11 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Retorna a última configuração carregada com sucesso via `Config::load`, se houver.
+    pub fn last_loaded() -> Option<Self> {
+        last_loaded()
+    }
+
     /// Lê o arquivo TOML. Se o arquivo não existir, usa os padrões e avisa.
     pub fn load(path: &Path) -> Result<Self> {
         let config = if path.exists() {
@@ -106,6 +126,9 @@ impl Config {
             Config::default()
         };
         config.validate()?;
+        if let Ok(mut g) = LAST_LOADED.lock() {
+            *g = Some(config.clone());
+        }
         Ok(config)
     }
 
@@ -126,6 +149,12 @@ impl Config {
         if !(500..=50_000).contains(&self.video_bitrate_kbps) {
             bail!("video_bitrate_kbps precisa estar entre 500 e 50000");
         }
+        if self.video_min_bitrate_kbps < 300 || self.video_min_bitrate_kbps >= self.video_bitrate_kbps {
+            bail!("video_min_bitrate_kbps precisa ser >= 300 e menor que video_bitrate_kbps");
+        }
+        if !(1..=30).contains(&self.keyframe_interval_secs) {
+            bail!("keyframe_interval_secs precisa estar entre 1 e 30");
+        }
         if self.tunnel == TunnelMode::Managed && self.tunnel_name.is_none() {
             bail!("tunnel = \"managed\" exige tunnel_name");
         }
@@ -140,9 +169,19 @@ impl Config {
         Ok(())
     }
 
-    /// Taxa-alvo do vídeo em bits por segundo.
+    /// Taxa-teto do vídeo em bits por segundo.
     pub fn video_bitrate_bps(&self) -> u32 {
         self.video_bitrate_kbps * 1000
+    }
+
+    /// Taxa mínima do vídeo em bits por segundo.
+    pub fn video_min_bitrate_bps(&self) -> u32 {
+        self.video_min_bitrate_kbps * 1000
+    }
+
+    /// Intervalo entre keyframes forçados.
+    pub fn keyframe_interval(&self) -> Duration {
+        Duration::from_secs(self.keyframe_interval_secs as u64)
     }
 
     /// Endereço da porta pública (acessível pelo tunnel/roteador).
@@ -166,6 +205,64 @@ mod tests {
         c.validate().unwrap();
         assert_eq!(c.tunnel, TunnelMode::External);
         assert_eq!(c.max_viewers, 10);
+        assert_eq!(c.video_bitrate_kbps, 3000);
+        assert_eq!(c.video_min_bitrate_kbps, 800);
+        assert_eq!(c.keyframe_interval_secs, 5);
+        assert_eq!(c.video_bitrate_bps(), 3_000_000);
+        assert_eq!(c.video_min_bitrate_bps(), 800_000);
+        assert_eq!(c.keyframe_interval(), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn validates_bitrate_and_keyframe_interval() {
+        // Mínimo menor que 300 deve ser rejeitado
+        let low_min = Config {
+            video_min_bitrate_kbps: 299,
+            ..Config::default()
+        };
+        assert!(low_min.validate().is_err());
+
+        // Mínimo igual ou maior que teto deve ser rejeitado
+        let equal = Config {
+            video_bitrate_kbps: 3000,
+            video_min_bitrate_kbps: 3000,
+            ..Config::default()
+        };
+        assert!(equal.validate().is_err());
+
+        let greater = Config {
+            video_bitrate_kbps: 3000,
+            video_min_bitrate_kbps: 3500,
+            ..Config::default()
+        };
+        assert!(greater.validate().is_err());
+
+        // Intervalo de keyframe fora de 1..=30 deve ser rejeitado
+        let zero_kf = Config {
+            keyframe_interval_secs: 0,
+            ..Config::default()
+        };
+        assert!(zero_kf.validate().is_err());
+
+        let high_kf = Config {
+            keyframe_interval_secs: 31,
+            ..Config::default()
+        };
+        assert!(high_kf.validate().is_err());
+
+        // Limites válidos
+        let valid_min = Config {
+            video_min_bitrate_kbps: 300,
+            keyframe_interval_secs: 1,
+            ..Config::default()
+        };
+        assert!(valid_min.validate().is_ok());
+
+        let valid_max = Config {
+            keyframe_interval_secs: 30,
+            ..Config::default()
+        };
+        assert!(valid_max.validate().is_ok());
     }
 
     #[test]

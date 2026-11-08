@@ -1,8 +1,10 @@
 //! Uma conexão WebRTC por espectador. O servidor é quem oferece (offer) e o navegador responde (answer).
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
@@ -14,15 +16,22 @@ use webrtc::peer_connection::{
     RTCPeerConnectionIceEvent, RTCPeerConnectionState,
 };
 
-use ::rtc::interceptor::Registry;
+use ::rtc::interceptor::{Attribute, Interceptor, Packet, Registry, Slot, StreamInfo, TaggedPacket};
 use ::rtc::peer_connection::configuration::interceptor_registry::register_default_interceptors;
 use ::rtc::peer_connection::configuration::media_engine::MediaEngine;
 use ::rtc::peer_connection::sdp::RTCSessionDescription;
 use ::rtc::peer_connection::transport::RTCIceCandidateInit;
+use ::rtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
+use ::rtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+use ::rtc::rtcp::receiver_report::ReceiverReport;
 use ::rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
+use ::rtc::sansio::Protocol;
+use ::rtc::shared::error::Error;
 
-use crate::rtc::broadcaster::{audio_codec, video_codec};
+use crate::rtc::broadcaster::{BroadcasterShared, audio_codec, get_broadcaster, video_codec};
 use crate::turn::{IceServer, to_rtc};
+
+static NEXT_PEER_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Evento de um peer que o sinalizador precisa repassar ao navegador.
 pub enum PeerEvent {
@@ -32,6 +41,8 @@ pub enum PeerEvent {
 
 struct Handler {
     tx: mpsc::UnboundedSender<PeerEvent>,
+    peer_id: Option<u64>,
+    broadcaster: Option<Arc<BroadcasterShared>>,
 }
 
 #[async_trait]
@@ -47,8 +58,93 @@ impl PeerConnectionEventHandler for Handler {
 
     async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
         debug!(?state, "estado da conexão do espectador");
+        if matches!(
+            state,
+            RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
+        ) {
+            if let (Some(peer_id), Some(b)) = (self.peer_id, &self.broadcaster) {
+                b.remove_peer(peer_id);
+            }
+        }
         let _ = self.tx.send(PeerEvent::State(state));
     }
+}
+
+pub struct RtcpFeedbackInterceptor {
+    peer_id: u64,
+    broadcaster: Arc<BroadcasterShared>,
+    read_queue: VecDeque<TaggedPacket>,
+    write_queue: VecDeque<TaggedPacket>,
+}
+
+impl RtcpFeedbackInterceptor {
+    pub fn new(peer_id: u64, broadcaster: Arc<BroadcasterShared>) -> Self {
+        Self {
+            peer_id,
+            broadcaster,
+            read_queue: VecDeque::new(),
+            write_queue: VecDeque::new(),
+        }
+    }
+}
+
+fn is_keyframe_request(packet: &Box<dyn ::rtc::rtcp::Packet>) -> bool {
+    let any = packet.as_any();
+    any.is::<PictureLossIndication>() || any.is::<FullIntraRequest>()
+}
+
+impl Protocol<TaggedPacket, TaggedPacket, ()> for RtcpFeedbackInterceptor {
+    type Rout = TaggedPacket;
+    type Wout = TaggedPacket;
+    type Eout = ();
+    type Error = Error;
+    type Time = Instant;
+
+    fn handle_read(&mut self, mut msg: TaggedPacket) -> Result<(), Self::Error> {
+        if let Packet::Rtcp(packets) = &msg.message.packet {
+            for packet in packets {
+                if is_keyframe_request(packet) {
+                    self.broadcaster.request_keyframe();
+                } else if let Some(rr) = packet.as_any().downcast_ref::<ReceiverReport>() {
+                    for rep in &rr.reports {
+                        let loss_pct = (rep.fraction_lost as f64 / 256.0) * 100.0;
+                        self.broadcaster.report_loss(self.peer_id, loss_pct);
+                    }
+                } else if let Some(sr) = packet
+                    .as_any()
+                    .downcast_ref::<::rtc::rtcp::sender_report::SenderReport>()
+                {
+                    for rep in &sr.reports {
+                        let loss_pct = (rep.fraction_lost as f64 / 256.0) * 100.0;
+                        self.broadcaster.report_loss(self.peer_id, loss_pct);
+                    }
+                }
+            }
+            msg.message.add(Attribute::DeliverToApplication);
+        }
+        self.read_queue.push_back(msg);
+        Ok(())
+    }
+
+    fn poll_read(&mut self) -> Option<Self::Rout> {
+        self.read_queue.pop_front()
+    }
+
+    fn handle_write(&mut self, msg: TaggedPacket) -> Result<(), Self::Error> {
+        self.write_queue.push_back(msg);
+        Ok(())
+    }
+
+    fn poll_write(&mut self) -> Option<Self::Wout> {
+        self.write_queue.pop_front()
+    }
+}
+
+impl Interceptor for RtcpFeedbackInterceptor {
+    fn bind_local_stream(&mut self, _info: &StreamInfo) {}
+    fn unbind_local_stream(&mut self, _info: &StreamInfo) {}
+    fn bind_remote_stream(&mut self, _info: &StreamInfo) {}
+    fn unbind_remote_stream(&mut self, _info: &StreamInfo) {}
 }
 
 /// Reserva portas UDP da faixa configurada para as conexões ICE, sem repetir portas em uso.
@@ -93,6 +189,8 @@ impl PortPool {
 
 pub struct Peer {
     conn: Arc<dyn PeerConnection>,
+    peer_id: Option<u64>,
+    broadcaster: Option<Arc<BroadcasterShared>>,
 }
 
 impl Peer {
@@ -112,6 +210,32 @@ impl Peer {
         let registry = register_default_interceptors(Registry::new(), &mut media)
             .context("interceptors RTP não registrados")?;
 
+        let mut broadcaster: Option<Arc<BroadcasterShared>> = None;
+        for track in &tracks {
+            let label = track.label().await;
+            if let Some(id_str) = label.strip_prefix("screencast-video-") {
+                if let Ok(id) = id_str.parse::<u64>() {
+                    if let Some(b) = get_broadcaster(id) {
+                        broadcaster = Some(b);
+                        break;
+                    }
+                }
+            }
+        }
+
+        let peer_id = broadcaster.as_ref().map(|b| {
+            let id = NEXT_PEER_ID.fetch_add(1, Ordering::Relaxed);
+            b.add_peer(id);
+            id
+        });
+
+        let registry = if let (Some(peer_id), Some(b)) = (peer_id, &broadcaster) {
+            let interceptor = RtcpFeedbackInterceptor::new(peer_id, b.clone());
+            registry.with(Slot::from(14_000), interceptor)
+        } else {
+            registry
+        };
+
         let configuration = RTCConfigurationBuilder::new()
             .with_ice_servers(to_rtc(ice_servers))
             .build();
@@ -121,7 +245,11 @@ impl Peer {
             .with_configuration(configuration)
             .with_media_engine(media)
             .with_interceptor_registry(registry)
-            .with_handler(Arc::new(Handler { tx }))
+            .with_handler(Arc::new(Handler {
+                tx,
+                peer_id,
+                broadcaster: broadcaster.clone(),
+            }))
             .with_udp_addrs(vec![
                 SocketAddr::from(([0, 0, 0, 0], udp_port)),
                 SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, udp_port)),
@@ -137,7 +265,14 @@ impl Peer {
                 .context("falha ao adicionar track")?;
         }
         info!(udp_port, "peer criado");
-        Ok((Self { conn }, rx))
+        Ok((
+            Self {
+                conn,
+                peer_id,
+                broadcaster,
+            },
+            rx,
+        ))
     }
 
     /// Gera o SDP de oferta e o define como descrição local (a coleta de ICE começa aqui).
@@ -170,8 +305,19 @@ impl Peer {
     }
 
     pub async fn close(&self) {
+        if let (Some(peer_id), Some(b)) = (self.peer_id, &self.broadcaster) {
+            b.remove_peer(peer_id);
+        }
         if let Err(err) = self.conn.close().await {
             debug!(%err, "erro ao fechar o peer");
+        }
+    }
+}
+
+impl Drop for Peer {
+    fn drop(&mut self) {
+        if let (Some(peer_id), Some(b)) = (self.peer_id, &self.broadcaster) {
+            b.remove_peer(peer_id);
         }
     }
 }
@@ -216,6 +362,20 @@ mod tests {
         let sdp = peer.create_offer().await.expect("offer");
         assert!(sdp.contains("H264/90000"), "SDP sem H264");
         assert!(sdp.contains("opus/48000/2"), "SDP sem Opus");
+        // Verifica feedback RTCP para NACK e PLI
+        assert!(
+            sdp.contains("nack") && sdp.contains("nack pli"),
+            "SDP sem rtcp-fb nack/pli: {sdp}"
+        );
+        // Garante que existe linha de rtcp-fb específica para nack e nack pli
+        assert!(
+            sdp.lines().any(|l| l.starts_with("a=rtcp-fb:") && l.ends_with("nack")),
+            "SDP sem a=rtcp-fb:<pt> nack: {sdp}"
+        );
+        assert!(
+            sdp.lines().any(|l| l.starts_with("a=rtcp-fb:") && l.ends_with("nack pli")),
+            "SDP sem a=rtcp-fb:<pt> nack pli: {sdp}"
+        );
         peer.close().await;
         broadcaster.stop();
     }

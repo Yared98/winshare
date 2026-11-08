@@ -8,9 +8,6 @@ use openh264::OpenH264API;
 use openh264::encoder::{BitRate, Encoder, EncoderConfig, FrameRate, RateControlMode};
 use openh264::formats::YUVBuffer;
 
-/// Intervalo entre keyframes forçados (além dos pedidos por PLI/viewer novo).
-const KEYFRAME_INTERVAL: Duration = Duration::from_secs(2);
-
 /// Ajusta largura e altura para pares (corta a última coluna/linha ímpar). Mínimo 2.
 pub fn even_size(width: u32, height: u32) -> (usize, usize) {
     (((width as usize) & !1).max(2), ((height as usize) & !1).max(2))
@@ -70,11 +67,32 @@ pub struct H264Encoder {
     width: usize,
     height: usize,
     last_keyframe: Instant,
+    keyframe_interval: Duration,
 }
 
 impl H264Encoder {
-    /// `width` e `height` precisam ser pares. `bitrate_bps` é o alvo de taxa; `fps` é o teto de quadros.
-    pub fn new(width: usize, height: usize, bitrate_bps: u32, fps: f32) -> Result<Self> {
+    /// Cria um novo encoder com o intervalo de quadros-chave padrão da configuração (ou 5 s).
+    pub fn new(
+        width: usize,
+        height: usize,
+        bitrate_bps: u32,
+        fps: f32,
+    ) -> Result<Self> {
+        let keyframe_interval = crate::config::last_loaded()
+            .map(|c| Duration::from_secs(u64::from(c.keyframe_interval_secs)))
+            .unwrap_or(Duration::from_secs(5));
+        Self::with_keyframe_interval(width, height, bitrate_bps, fps, keyframe_interval)
+    }
+
+    /// `width` e `height` precisam ser pares. `bitrate_bps` é o alvo de taxa; `fps` é o teto de quadros;
+    /// `keyframe_interval` é o intervalo entre IDRs periódicos forçados.
+    pub fn with_keyframe_interval(
+        width: usize,
+        height: usize,
+        bitrate_bps: u32,
+        fps: f32,
+        keyframe_interval: Duration,
+    ) -> Result<Self> {
         anyhow::ensure!(
             width % 2 == 0 && height % 2 == 0,
             "largura e altura precisam ser pares"
@@ -90,7 +108,8 @@ impl H264Encoder {
             width,
             height,
             // Força o primeiro quadro a ser IDR (o primeiro encode já é keyframe).
-            last_keyframe: Instant::now() - KEYFRAME_INTERVAL,
+            last_keyframe: Instant::now() - keyframe_interval,
+            keyframe_interval,
         })
     }
 
@@ -112,7 +131,7 @@ impl H264Encoder {
         );
         let mut yuv = Vec::new();
         bgra_to_i420(bgra, self.width, self.height, stride, &mut yuv);
-        if self.last_keyframe.elapsed() >= KEYFRAME_INTERVAL {
+        if self.last_keyframe.elapsed() >= self.keyframe_interval {
             self.force_keyframe();
             self.last_keyframe = Instant::now();
         }
@@ -189,5 +208,6 @@ mod tests {
         let bgra = solid(0, 128, 255, 64, 48);
         let nals = enc.encode_bgra(&bgra, 64 * 4).unwrap();
         assert!(nals.starts_with(&[0, 0, 0, 1]) || nals.starts_with(&[0, 0, 1]));
+        assert_eq!(enc.keyframe_interval, Duration::from_secs(5));
     }
 }
