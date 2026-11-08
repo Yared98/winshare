@@ -15,10 +15,8 @@ use bytes::Bytes;
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
 use webrtc::media_stream::track_local::TrackLocal;
-use webrtc::media_stream::track_local::static_sample::TrackLocalStaticSample;
 
 use ::rtc::media::Sample;
-use ::rtc::media_stream::MediaStreamTrack;
 use ::rtc::peer_connection::configuration::media_engine::{MIME_TYPE_H264, MIME_TYPE_OPUS};
 use ::rtc::rtp_transceiver::PayloadType;
 use ::rtc::rtp_transceiver::rtp_sender::{
@@ -31,6 +29,7 @@ use crate::capture::video::{CapturedFrame, WindowCapture, WindowState, window_pi
 use crate::encode::h264::{H264Encoder, even_size};
 use crate::encode::opus::OpusEncoder;
 use crate::rtc::bitrate::{BitrateController, StreamHealth};
+use crate::rtc::fanout::FanoutTrack;
 
 /// Payload types negociados (iguais em todos os peers, pois o MediaEngine é o mesmo).
 pub const VIDEO_PAYLOAD_TYPE: PayloadType = 102;
@@ -155,8 +154,8 @@ impl SourceStatus {
 }
 
 pub struct Broadcaster {
-    video: Arc<TrackLocalStaticSample>,
-    audio: Arc<TrackLocalStaticSample>,
+    video: Arc<FanoutTrack>,
+    audio: Arc<FanoutTrack>,
     stop: Arc<AtomicBool>,
     shared: Arc<BroadcasterShared>,
     status: Arc<SourceStatus>,
@@ -239,7 +238,7 @@ enum AudioInput {
 /// Tudo que a thread de vídeo precisa, para não estourar a lista de argumentos.
 struct VideoJob {
     handle: Handle,
-    track: Arc<TrackLocalStaticSample>,
+    track: Arc<FanoutTrack>,
     ssrc: u32,
     input: VideoInput,
     bitrate_bps: u32,
@@ -294,26 +293,30 @@ impl Broadcaster {
         register_broadcaster(id, Arc::downgrade(&shared));
 
         let video_track_label = format!("screencast-video-{id}");
-        let video = Arc::new(TrackLocalStaticSample::new(
-            Instant::now(),
-            MediaStreamTrack::new(
-                "screencast-stream".to_owned(),
-                video_track_label.clone(),
-                video_track_label,
-                RtpCodecKind::Video,
-                vec![encoding(video_ssrc, video_codec())],
-            ),
-        )?);
-        let audio = Arc::new(TrackLocalStaticSample::new(
-            Instant::now(),
-            MediaStreamTrack::new(
-                "screencast-stream".to_owned(),
-                "screencast-audio".to_owned(),
-                "screencast-audio".to_owned(),
-                RtpCodecKind::Audio,
-                vec![encoding(audio_ssrc, audio_codec())],
-            ),
-        )?);
+        // Espectador lento (fila cheia) perde quadros: pede um quadro completo para ele se recuperar.
+        let weak_shared = Arc::downgrade(&shared);
+        let video = Arc::new(FanoutTrack::new(
+            handle.clone(),
+            RtpCodecKind::Video,
+            video_track_label,
+            encoding(video_ssrc, video_codec()),
+            video_ssrc,
+            VIDEO_PAYLOAD_TYPE,
+            Some(Box::new(move || {
+                if let Some(shared) = weak_shared.upgrade() {
+                    shared.request_keyframe();
+                }
+            })),
+        ));
+        let audio = Arc::new(FanoutTrack::new(
+            handle.clone(),
+            RtpCodecKind::Audio,
+            "screencast-audio".to_owned(),
+            encoding(audio_ssrc, audio_codec()),
+            audio_ssrc,
+            AUDIO_PAYLOAD_TYPE,
+            None,
+        ));
 
         let stop = Arc::new(AtomicBool::new(false));
         let status = Arc::new(SourceStatus::default());
@@ -350,12 +353,22 @@ impl Broadcaster {
         })
     }
 
-    /// Tracks adicionadas a cada peer (as mesmas instâncias para todos).
+    /// Tracks NOVAS para um peer (uma por espectador; o encoder é o mesmo para todos).
+    /// Vazio só se a criação da track falhar, o que não acontece com codecs já validados.
     pub fn tracks(&self) -> Vec<Arc<dyn TrackLocal>> {
-        vec![
-            self.video.clone() as Arc<dyn TrackLocal>,
-            self.audio.clone() as Arc<dyn TrackLocal>,
-        ]
+        let mut tracks: Vec<Arc<dyn TrackLocal>> = Vec::with_capacity(2);
+        for fanout in [&self.video, &self.audio] {
+            match fanout.subscribe() {
+                Ok(track) => tracks.push(track),
+                Err(err) => warn!(error = %format!("{err:#}"), "não consegui criar a track do espectador"),
+            }
+        }
+        tracks
+    }
+
+    /// Quantas conexões estão inscritas no vídeo (inclui o preview do painel).
+    pub fn subscriber_count(&self) -> usize {
+        self.video.subscriber_count()
     }
 
     /// Retorna as métricas de saúde da transmissão (taxa-alvo e pior perda atual).
@@ -412,7 +425,7 @@ fn run_video(job: VideoJob) {
 
 fn run_test_video(
     handle: &Handle,
-    track: &TrackLocalStaticSample,
+    track: &FanoutTrack,
     ssrc: u32,
     initial_bitrate_bps: u32,
     stop: &AtomicBool,
@@ -475,7 +488,7 @@ fn run_test_video(
 #[allow(clippy::too_many_arguments)]
 fn run_window_video(
     handle: &Handle,
-    track: &TrackLocalStaticSample,
+    track: &FanoutTrack,
     ssrc: u32,
     mut capture: WindowCapture,
     initial_bitrate_bps: u32,
@@ -587,7 +600,7 @@ fn frame_duration(previous: Option<i64>, now: i64) -> Duration {
 
 fn write_video(
     handle: &Handle,
-    track: &TrackLocalStaticSample,
+    track: &FanoutTrack,
     ssrc: u32,
     data: Vec<u8>,
     at: Instant,
@@ -599,16 +612,13 @@ fn write_video(
         duration,
         ..Sample::new(at)
     };
-    let writer = track.sample_writer(ssrc, VIDEO_PAYLOAD_TYPE);
-    if let Err(err) = handle.block_on(writer.write_sample(&sample)) {
-        // Sem viewers conectados a escrita falha; é esperado.
-        debug!(%err, "quadro de vídeo não entregue");
-    }
+    let _ = (handle, ssrc);
+    track.write(sample);
 }
 
 fn run_audio(
     handle: Handle,
-    track: Arc<TrackLocalStaticSample>,
+    track: Arc<FanoutTrack>,
     ssrc: u32,
     input: AudioInput,
     stop: Arc<AtomicBool>,
@@ -630,7 +640,7 @@ fn run_audio(
 
 fn run_tone_audio(
     handle: &Handle,
-    track: &TrackLocalStaticSample,
+    track: &FanoutTrack,
     ssrc: u32,
     mut encoder: OpusEncoder,
     stop: &AtomicBool,
@@ -653,7 +663,7 @@ fn run_tone_audio(
 
 fn run_process_audio(
     handle: &Handle,
-    track: &TrackLocalStaticSample,
+    track: &FanoutTrack,
     ssrc: u32,
     mut encoder: OpusEncoder,
     pid: u32,
@@ -684,17 +694,15 @@ fn run_process_audio(
     }
 }
 
-fn write_audio(handle: &Handle, track: &TrackLocalStaticSample, ssrc: u32, data: Vec<u8>, at: Instant) {
+fn write_audio(handle: &Handle, track: &FanoutTrack, ssrc: u32, data: Vec<u8>, at: Instant) {
     let sample = Sample {
         data: Bytes::from(data),
         timestamp: at,
         duration: AUDIO_FRAME,
         ..Sample::new(at)
     };
-    let writer = track.sample_writer(ssrc, AUDIO_PAYLOAD_TYPE);
-    if let Err(err) = handle.block_on(writer.write_sample(&sample)) {
-        debug!(%err, "quadro de áudio não entregue");
-    }
+    let _ = (handle, ssrc);
+    track.write(sample);
 }
 
 /// Dorme até `next` (agenda por relógio, sem acumular atraso). Se já passou, reancora.

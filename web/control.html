@@ -504,6 +504,9 @@
         <span class="status-label">Espectadores:</span>
         <span class="status-val" id="viewers-count">0 de 10 espectadores</span>
 
+        <span class="status-label">Qualidade:</span>
+        <span class="status-val" id="stream-health">—</span>
+
         <span class="status-label">Janela:</span>
         <span class="status-val" id="source-name">—</span>
 
@@ -672,6 +675,15 @@
 
     // Espectadores
     viewersCount.textContent = `${status.viewers} de ${status.max_viewers} espectadores`;
+    const health = $('stream-health');
+    if (status.stream) {
+      const loss = status.stream.worst_loss_pct;
+      health.textContent = `${status.stream.target_kbps} kbps · pior perda ${loss.toFixed(1)}%`;
+      health.style.color = loss > 5 ? 'var(--danger)' : '';
+    } else {
+      health.textContent = '—';
+      health.style.color = '';
+    }
 
     // Janela compartilhada
     sourceName.textContent = resolveSourceTitle(status);

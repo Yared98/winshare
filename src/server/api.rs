@@ -57,6 +57,8 @@ pub struct StatusBody {
     pub source: Option<&'static str>,
     pub hwnd: Option<u64>,
     pub uptime_secs: Option<u64>,
+    /// Taxa-alvo atual do vídeo e pior perda entre os espectadores (só ao vivo).
+    pub stream: Option<crate::rtc::bitrate::StreamHealth>,
     pub viewers: usize,
     pub max_viewers: usize,
     pub link: Option<String>,
@@ -207,6 +209,10 @@ async fn status(State(state): State<Arc<AppState>>) -> Json<StatusBody> {
 fn snapshot(state: &AppState) -> StatusBody {
     let live = state.live.lock().expect("live poisoned");
     let mut notices = state.notices.clone();
+    let stream = live
+        .as_ref()
+        .filter(|session| !session.broadcaster.ended())
+        .map(|session| session.broadcaster.health());
     let (status, source, hwnd, uptime_secs, link) = match live.as_ref() {
         Some(session) if session.broadcaster.ended() => {
             // A fonte encerrou (ex.: janela fechada): derruba os espectadores uma vez, sem remover a sessão.
@@ -226,6 +232,7 @@ fn snapshot(state: &AppState) -> StatusBody {
         source,
         hwnd,
         uptime_secs,
+        stream,
         viewers: state.viewers.load(Ordering::SeqCst),
         max_viewers: state.config.max_viewers,
         link,
