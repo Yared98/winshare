@@ -43,6 +43,8 @@ const CHUNK_QUEUE: usize = 50;
 /// Atraso alvo do silêncio de preenchimento: se o loopback não entregar a tempo, completa com zeros.
 const LEAD_FRAMES: u64 = 4_800;
 const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(10);
+/// Loopback do sistema: a primeira ativação do dispositivo de saída pode demorar bem mais.
+const SYSTEM_ACTIVATION_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(20);
 
 /// Tom senoidal estéreo que gera quadros de 20 ms de PCM i16 intercalado.
@@ -141,8 +143,9 @@ impl AudioCapture {
             .name("audio-system-loopback".to_owned())
             .spawn(move || system_thread_main(thread_stop, chunk_tx, ready_tx))
             .context("não consegui iniciar a thread de áudio do sistema")?;
+        // O primeiro uso do dispositivo de saída pode levar ~20 s (ele "acorda"); depois é instantâneo.
         ready_rx
-            .recv_timeout(ACTIVATION_TIMEOUT + Duration::from_secs(2))
+            .recv_timeout(SYSTEM_ACTIVATION_TIMEOUT)
             .context("a ativação do áudio do sistema não respondeu")??;
         Ok((
             Self {
