@@ -102,6 +102,10 @@
   let lastFrames = -1;
   let stalledTicks = 0;
   let disconnectTimer = null;
+  let lastReason = 'iniciou';
+  let totalReconnects = 0; // não zera ao reconectar, ao contrário de `retries`
+  let prevStatsBytes = -1;
+  let prevStatsTime = 0;
 
   // Reconexão completa: derruba WS e peer, e tenta de novo.
   function reconnect() {
@@ -109,7 +113,13 @@
     scheduleRetry();
   }
 
-  // Vigia: se o vídeo não avança por ~6 s com a conexão "conectada", reconecta.
+  function triggerReconnect(reason) {
+    lastReason = reason;
+    reconnect();
+  }
+
+  // Vigia mais tolerante: se o vídeo não avança por ~10 s com a conexão "conectada":
+  // ao detectar vídeo parado (primeiro tick), pede keyframe e só reconecta se continuar parado ~10 s no total.
   setInterval(async () => {
     send({ type: 'ping' }); // mantém o WebSocket vivo atrás do Cloudflare
     if (!pc || pc.connectionState !== 'connected') { stalledTicks = 0; lastFrames = -1; return; }
@@ -123,8 +133,86 @@
     } catch { return; }
     if (frames > lastFrames) { lastFrames = frames; stalledTicks = 0; return; }
     stalledTicks += 1;
-    if (stalledTicks >= 3) { stalledTicks = 0; lastFrames = -1; reconnect(); }
+    if (stalledTicks === 1 || stalledTicks === 3) {
+      send({ type: 'keyframe' });
+    }
+    if (stalledTicks >= 5) {
+      stalledTicks = 0;
+      lastFrames = -1;
+      triggerReconnect('travou');
+    }
   }, 2000);
+
+  // Relatório de saúde a cada 5 s
+  setInterval(async () => {
+    if (!pc || pc.connectionState !== 'connected') return;
+    let rtt_ms = 0;
+    let path = 'direct';
+    let loss_pct = 0;
+    let fps = 0;
+    let kbps = 0;
+
+    try {
+      const stats = await pc.getStats();
+      let activePair = null;
+      const candidates = new Map();
+      stats.forEach((r) => {
+        if (r.type === 'candidate-pair' && (r.nominated || r.state === 'succeeded' || r.selected)) {
+          activePair = r;
+        }
+        if (r.type === 'local-candidate' || r.type === 'remote-candidate') {
+          candidates.set(r.id, r);
+        }
+      });
+      if (activePair) {
+        if (typeof activePair.currentRoundTripTime === 'number') {
+          rtt_ms = Math.round(activePair.currentRoundTripTime * 1000);
+        } else if (typeof activePair.roundTripTime === 'number') {
+          rtt_ms = Math.round(activePair.roundTripTime * 1000);
+        }
+        const local = candidates.get(activePair.localCandidateId);
+        const remote = candidates.get(activePair.remoteCandidateId);
+        if ((local && local.candidateType === 'relay') || (remote && remote.candidateType === 'relay')) {
+          path = 'relay';
+        }
+      }
+
+      stats.forEach((r) => {
+        if (r.type === 'inbound-rtp' && r.kind === 'video') {
+          const lost = r.packetsLost || 0;
+          const received = r.packetsReceived || 0;
+          const total = lost + received;
+          if (total > 0 && lost >= 0) {
+            loss_pct = Math.round((lost / total) * 1000) / 10;
+          }
+          if (typeof r.framesPerSecond === 'number') {
+            fps = Math.round(r.framesPerSecond);
+          }
+          if (prevStatsTime && prevStatsBytes >= 0 && r.timestamp > prevStatsTime) {
+            const deltaMs = r.timestamp - prevStatsTime;
+            if (r.bytesReceived >= prevStatsBytes) {
+              kbps = Math.round(((r.bytesReceived - prevStatsBytes) * 8) / deltaMs);
+            }
+          }
+          prevStatsBytes = r.bytesReceived || 0;
+          prevStatsTime = r.timestamp;
+        }
+      });
+    } catch {
+      return;
+    }
+
+    send({
+      type: 'stats',
+      rtt_ms,
+      loss_pct,
+      fps,
+      kbps,
+      path,
+      reconnects: totalReconnects,
+      last_reason: lastReason,
+    });
+  }, 5000);
 
   // Ao voltar para a aba, recomeça a contagem do vigia do zero.
   document.addEventListener('visibilitychange', () => { stalledTicks = 0; lastFrames = -1; });
@@ -133,6 +221,7 @@
     closePeer();
     if (retries >= MAX_RETRIES) { setStatus('Conexão perdida.'); return; }
     retries += 1;
+    totalReconnects += 1;
     setStatus(`Reconectando… (${retries})`);
     clearTimeout(retryTimer);
     retryTimer = setTimeout(connect, RETRY_MS);
@@ -170,8 +259,9 @@
       if (!pc) return;
       clearTimeout(disconnectTimer);
       if (pc.connectionState === 'connected') { retries = 0; setStatus('Ao vivo'); }
-      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') reconnect();
-      if (pc.connectionState === 'disconnected') disconnectTimer = setTimeout(reconnect, 4000);
+      if (pc.connectionState === 'failed') triggerReconnect('ice-failed');
+      else if (pc.connectionState === 'closed') triggerReconnect('ice-closed');
+      else if (pc.connectionState === 'disconnected') disconnectTimer = setTimeout(() => triggerReconnect('ice-desconectado'), 4000);
     };
     await pc.setRemoteDescription({ type: 'offer', sdp });
     const answer = await pc.createAnswer();
@@ -213,7 +303,11 @@
           break;
       }
     };
-    ws.onclose = () => { if (!messageBox.hidden) return; scheduleRetry(); };
+    ws.onclose = () => {
+      if (!messageBox.hidden) return;
+      lastReason = 'ws-fechado';
+      scheduleRetry();
+    };
   }
 
   passwordForm.addEventListener('submit', (event) => {

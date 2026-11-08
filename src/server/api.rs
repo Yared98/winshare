@@ -38,6 +38,19 @@ pub struct StartRequest {
     pub hwnd: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ViewerStatusItem {
+    pub id: String,
+    pub connected_secs: u64,
+    pub path: String,
+    pub rtt_ms: u32,
+    pub loss_pct: f32,
+    pub fps: u32,
+    pub kbps: u32,
+    pub reconnects: u32,
+    pub last_reason: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct StatusBody {
     pub state: &'static str,
@@ -49,6 +62,7 @@ pub struct StatusBody {
     pub link: Option<String>,
     pub tunnel: &'static str,
     pub notices: Vec<String>,
+    pub viewer_list: Vec<ViewerStatusItem>,
 }
 
 pub struct ApiError(StatusCode, String);
@@ -66,16 +80,20 @@ impl IntoResponse for ApiError {
 }
 
 async fn preview_socket(
-    ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
+    axum::extract::ConnectInfo(peer_addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
     headers: axum::http::HeaderMap,
+    ws: WebSocketUpgrade,
 ) -> Response {
     // WebSocket não passa por CORS: sem esta checagem, qualquer site aberto neste
     // computador poderia abrir o preview (que não pede senha).
     if !local_origin(&headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    ws.on_upgrade(move |socket| signaling::handle_viewer(socket, state, ViewerKind::Preview))
+    let client_ip = signaling::client_ip(&headers, peer_addr);
+    ws.on_upgrade(move |socket| {
+        signaling::handle_viewer(socket, state, ViewerKind::Preview, client_ip)
+    })
 }
 
 /// Aceita só Origin `http(s)://` de host local. Sem Origin (cliente que não é navegador) também passa:
@@ -217,6 +235,7 @@ fn snapshot(state: &AppState) -> StatusBody {
             crate::config::TunnelMode::None => "none",
         },
         notices,
+        viewer_list: state.viewer_list(),
     }
 }
 

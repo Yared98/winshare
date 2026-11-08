@@ -1,11 +1,14 @@
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use tokio::net::TcpListener;
 use tracing::{info, warn};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
 use screencast::config::{Config, TunnelMode};
@@ -23,10 +26,28 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let log_dir = exe_dir.join("logs");
+    let _ = std::fs::create_dir_all(&log_dir);
+    cleanup_old_logs(&log_dir, Duration::from_secs(7 * 24 * 3600));
+
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "screencast.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let console_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stdout);
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(non_blocking)
+        .with_ansi(false);
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(console_layer)
+        .with(file_layer)
         .init();
 
     let cli = Cli::parse();
@@ -111,5 +132,30 @@ fn open_control_page(url: &str) {
         let _ = std::process::Command::new("cmd")
             .args(["/C", "start", "", url])
             .spawn();
+    }
+}
+
+/// Apaga arquivos na pasta de logs modificados/criados há mais de `max_age`.
+fn cleanup_old_logs(dir: &Path, max_age: Duration) {
+    let now = SystemTime::now();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let file_time = meta.modified().or_else(|_| meta.created());
+        if let Ok(time) = file_time {
+            if let Ok(age) = now.duration_since(time) {
+                if age > max_age {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
     }
 }
