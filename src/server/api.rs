@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::Json;
 use axum::Router;
-use axum::extract::State;
+use axum::extract::{State, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -14,7 +14,7 @@ use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::rtc::broadcaster::Broadcaster;
-use crate::server::{AppState, LiveSession};
+use crate::server::{AppState, LiveSession, ViewerKind, signaling};
 use crate::turn;
 use crate::windows_list::{WindowInfo, list_visible_windows};
 
@@ -27,6 +27,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/start", post(start))
         .route("/api/stop", post(stop))
         .route("/api/status", get(status))
+        .route("/api/preview", get(preview_socket))
 }
 
 #[derive(Debug, Deserialize)]
@@ -41,6 +42,8 @@ pub struct StartRequest {
 pub struct StatusBody {
     pub state: &'static str,
     pub source: Option<&'static str>,
+    pub hwnd: Option<u64>,
+    pub uptime_secs: Option<u64>,
     pub viewers: usize,
     pub max_viewers: usize,
     pub link: Option<String>,
@@ -60,6 +63,13 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (self.0, Json(serde_json::json!({ "error": self.1 }))).into_response()
     }
+}
+
+async fn preview_socket(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    ws.on_upgrade(move |socket| signaling::handle_viewer(socket, state, ViewerKind::Preview))
 }
 
 async fn control_page() -> Html<&'static str> {
@@ -109,16 +119,16 @@ async fn start(
 
     let handle = tokio::runtime::Handle::current();
     let bitrate = state.config.video_bitrate_bps();
-    let (broadcaster, source) = if request.test {
+    let (broadcaster, source, hwnd) = if request.test {
         let broadcaster = Broadcaster::start_test_source(handle, bitrate)
             .map_err(|err| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("{err:#}")))?;
-        (broadcaster, "test")
+        (broadcaster, "test", None)
     } else if let Some(hwnd) = request.hwnd {
         let broadcaster = Broadcaster::start_window(handle, hwnd, bitrate).map_err(|err| {
             warn!(error = %format!("{err:#}"), "não consegui iniciar a captura");
             ApiError::new(StatusCode::BAD_REQUEST, format!("{err:#}"))
         })?;
-        (broadcaster, "window")
+        (broadcaster, "window", Some(hwnd))
     } else {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -132,6 +142,8 @@ async fn start(
     *live = Some(LiveSession {
         broadcaster,
         source,
+        hwnd,
+        started_at: std::time::Instant::now(),
         stop,
         ice_servers,
     });
@@ -156,22 +168,25 @@ async fn status(State(state): State<Arc<AppState>>) -> Json<StatusBody> {
 fn snapshot(state: &AppState) -> StatusBody {
     let live = state.live.lock().expect("live poisoned");
     let mut notices = state.notices.clone();
-    let (status, source, link) = match live.as_ref() {
+    let (status, source, hwnd, uptime_secs, link) = match live.as_ref() {
         Some(session) if session.broadcaster.ended() => {
             // A fonte encerrou (ex.: janela fechada): derruba os espectadores uma vez, sem remover a sessão.
             let _ = session.stop.send_replace(true);
             notices.extend(session.broadcaster.notices());
-            ("ended", Some(session.source), None)
+            ("ended", Some(session.source), None, None, None)
         }
         Some(session) => {
             notices.extend(session.broadcaster.notices());
-            ("live", Some(session.source), Some(state.viewer_link()))
+            let uptime = session.started_at.elapsed().as_secs();
+            ("live", Some(session.source), session.hwnd, Some(uptime), Some(state.viewer_link()))
         }
-        None => ("idle", None, None),
+        None => ("idle", None, None, None, None),
     };
     StatusBody {
         state: status,
         source,
+        hwnd,
+        uptime_secs,
         viewers: state.viewers.load(Ordering::SeqCst),
         max_viewers: state.config.max_viewers,
         link,

@@ -17,7 +17,7 @@ use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
 use crate::rtc::peer::{Peer, PeerEvent};
-use crate::server::AppState;
+use crate::server::{AppState, ViewerKind};
 use crate::turn::IceServer;
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -43,24 +43,26 @@ struct IceCandidate {
     sdp_mline_index: Option<u16>,
 }
 
-/// Atende um espectador do início ao fim da conexão.
-pub async fn handle_viewer(socket: WebSocket, state: Arc<AppState>) {
+/// Atende um espectador ou preview do início ao fim da conexão.
+pub async fn handle_viewer(socket: WebSocket, state: Arc<AppState>, kind: ViewerKind) {
     let (tx, rx) = socket.split();
     let (mut tx, mut rx) = (tx, rx);
 
-    let (slot, tracks, mut stop, ice_servers) = match state.join_viewer() {
+    let (slot, tracks, mut stop, ice_servers) = match state.join_viewer(kind) {
         Ok(joined) => joined,
         Err(reason) => {
             send_error(&mut tx, reason).await;
             return;
         }
     };
-    // `slot` libera a vaga de espectador ao sair desta função.
+    // `slot` libera a vaga de espectador (se for público) ao sair desta função.
     let _slot = slot;
 
-    if let Some(expected) = state.config.password.as_deref() {
-        if !authenticate(&mut tx, &mut rx, expected).await {
-            return;
+    if kind == ViewerKind::Public {
+        if let Some(expected) = state.config.password.as_deref() {
+            if !authenticate(&mut tx, &mut rx, expected).await {
+                return;
+            }
         }
     }
 
@@ -87,7 +89,10 @@ pub async fn handle_viewer(socket: WebSocket, state: Arc<AppState>) {
 
     peer.close().await;
     state.ports.release(udp_port);
-    info!("espectador desconectado");
+    match kind {
+        ViewerKind::Public => info!("espectador desconectado"),
+        ViewerKind::Preview => info!("preview desconectado"),
+    }
 }
 
 async fn run_session(
