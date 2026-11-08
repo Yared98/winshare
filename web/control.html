@@ -507,7 +507,7 @@
         <span class="status-label">Qualidade:</span>
         <span class="status-val" id="stream-health">—</span>
 
-        <span class="status-label">Janela:</span>
+        <span class="status-label">Fonte:</span>
         <span class="status-val" id="source-name">—</span>
 
         <span class="status-label">Link:</span>
@@ -525,6 +525,13 @@
       </div>
 
       <div id="notices-box" class="notice-box" hidden></div>
+    </section>
+
+    <section>
+      <h2>Monitores</h2>
+      <ul id="monitors-list" class="windows-list">
+        <li class="window-item"><span class="window-title" style="color:var(--muted)">Carregando monitores…</span></li>
+      </ul>
     </section>
 
     <section>
@@ -567,11 +574,13 @@
 
   const windowsSearch = $('windows-search');
   const btnRefresh = $('btn-refresh');
+  const monitorsList = $('monitors-list');
   const windowsList = $('windows-list');
   const viewersTbody = $('viewers-tbody');
 
   // Estado local
   let currentStatus = null;
+  let cachedMonitors = [];
   let cachedWindows = [];
   let pollTimer = null;
   let copyFeedbackTimer = null;
@@ -646,6 +655,16 @@
     }
     if (status.source === 'test') {
       return 'Fonte de teste';
+    }
+    if (status.source === 'monitor' || (status.monitor !== undefined && status.monitor !== null)) {
+      const monId = String(status.monitor);
+      const idx = cachedMonitors.findIndex((m) => String(m.id) === monId);
+      const found = idx >= 0 ? cachedMonitors[idx] : null;
+      const num = idx >= 0 ? idx + 1 : 1;
+      if (found && found.width && found.height) {
+        return `Monitor ${num} (${found.width}x${found.height})`;
+      }
+      return `Monitor ${num}`;
     }
     if (status.hwnd) {
       const found = cachedWindows.find((w) => String(w.hwnd) === String(status.hwnd));
@@ -727,6 +746,7 @@
       }
     }
 
+    renderMonitors();
     renderWindows();
     renderViewers(status.viewer_list);
   }
@@ -775,6 +795,94 @@
       const status = await api('/api/status');
       renderStatus(status);
     } catch (err) {
+      setNotices([err.message]);
+    }
+  }
+
+  // Monitores
+  function renderMonitors() {
+    if (!monitorsList) return;
+    monitorsList.innerHTML = '';
+    if (cachedMonitors.length === 0) {
+      const li = document.createElement('li');
+      li.className = 'window-item';
+      li.innerHTML = '<span class="window-title" style="color:var(--muted)">Nenhum monitor encontrado.</span>';
+      monitorsList.appendChild(li);
+      return;
+    }
+
+    cachedMonitors.forEach((m, idx) => {
+      const li = document.createElement('li');
+      li.className = 'window-item';
+
+      const isCurrentLive = currentStatus && currentStatus.state === 'live' &&
+        currentStatus.source === 'monitor' && String(currentStatus.monitor) === String(m.id);
+      if (isCurrentLive) {
+        li.classList.add('active');
+      }
+
+      const meta = document.createElement('div');
+      meta.className = 'window-meta';
+
+      const title = document.createElement('span');
+      title.className = 'window-title';
+      const label = `Monitor ${idx + 1} (${m.width}x${m.height})`;
+      title.textContent = m.primary ? `${label} — Principal` : label;
+      title.title = m.name || label;
+
+      const desc = document.createElement('span');
+      desc.className = 'window-pid';
+      desc.textContent = m.name ? `${m.name}` : `ID ${m.id}`;
+
+      meta.append(title, desc);
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      if (isCurrentLive) {
+        btn.disabled = true;
+        btn.textContent = 'Transmitindo';
+      } else {
+        btn.className = 'secondary';
+        btn.textContent = 'Compartilhar';
+        btn.addEventListener('click', () => handleShareMonitor(m));
+      }
+
+      li.append(meta, btn);
+      monitorsList.appendChild(li);
+    });
+  }
+
+  async function loadMonitors() {
+    try {
+      cachedMonitors = await api('/api/monitors');
+      renderMonitors();
+      if (currentStatus) {
+        sourceName.textContent = resolveSourceTitle(currentStatus);
+      }
+    } catch (err) {
+      if (monitorsList) {
+        monitorsList.innerHTML = '<li class="window-item"><span class="window-title" style="color:var(--danger)"></span></li>';
+        monitorsList.querySelector('span').textContent = err.message;
+      }
+    }
+  }
+
+  async function handleShareMonitor(m) {
+    if (currentStatus && currentStatus.state === 'live') {
+      alert('Já existe uma transmissão ativa. Pare a transmissão atual antes de iniciar outra.');
+      return;
+    }
+    try {
+      const status = await api('/api/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ monitor: m.id }),
+      });
+      renderStatus(status);
+    } catch (err) {
+      if (err.status === 409) {
+        alert('Já existe uma transmissão ativa. Pare a transmissão atual antes de iniciar outra.');
+      }
       setNotices([err.message]);
     }
   }
@@ -916,7 +1024,10 @@
 
   btnStartTest.addEventListener('click', startTestSource);
   btnStop.addEventListener('click', stopTransmission);
-  btnRefresh.addEventListener('click', loadWindows);
+  btnRefresh.addEventListener('click', () => {
+    loadMonitors();
+    loadWindows();
+  });
   windowsSearch.addEventListener('input', renderWindows);
 
   // WebRTC Preview via /api/preview
@@ -1180,6 +1291,7 @@
   document.addEventListener('visibilitychange', () => { stalledTicks = 0; lastFrames = -1; });
 
   // Inicialização
+  loadMonitors();
   loadWindows();
   refreshStatus();
   pollTimer = setInterval(refreshStatus, 2000);

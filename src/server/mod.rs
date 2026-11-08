@@ -40,6 +40,7 @@ pub struct LiveSession {
     pub broadcaster: Broadcaster,
     pub source: &'static str,
     pub hwnd: Option<u64>,
+    pub monitor: Option<u64>,
     pub started_at: std::time::Instant,
     /// Ao receber `true`, os WebSockets dos espectadores encerram.
     pub stop: watch::Sender<bool>,
@@ -459,6 +460,7 @@ mod tests {
             broadcaster,
             source: "test",
             hwnd: None,
+            monitor: None,
             started_at: std::time::Instant::now(),
             stop,
             ice_servers,
@@ -526,6 +528,7 @@ mod tests {
             broadcaster,
             source: "window",
             hwnd: Some(12345),
+            monitor: None,
             started_at: std::time::Instant::now(),
             stop,
             ice_servers,

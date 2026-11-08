@@ -18,6 +18,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows_capture::capture::{CaptureControl, Context as CaptureContext, GraphicsCaptureApiHandler};
 use windows_capture::frame::Frame;
 use windows_capture::graphics_capture_api::InternalCaptureControl;
+use windows_capture::monitor::Monitor;
 use windows_capture::settings::{
     ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
     MinimumUpdateIntervalSettings, SecondaryWindowSettings, Settings,
@@ -233,6 +234,121 @@ unsafe impl Send for WindowCapture {}
 impl Drop for WindowCapture {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+/// Captura ativa de um monitor inteiro. Quadros saem por `next_frame`.
+pub struct MonitorCapture {
+    shared: Arc<Shared>,
+    control: Option<CaptureControl<Handler, anyhow::Error>>,
+}
+
+impl MonitorCapture {
+    /// Inicia a captura do monitor `id` (HMONITOR como u64, como em `/api/monitors`).
+    pub fn start(id: u64) -> Result<Self> {
+        let monitors = Monitor::enumerate()
+            .map_err(|err| anyhow::anyhow!("falha ao enumerar monitores: {err:?}"))?;
+        let monitor = monitors
+            .into_iter()
+            .find(|m| m.as_raw_hmonitor() as usize as u64 == id)
+            .ok_or_else(|| anyhow::anyhow!("monitor {id} não encontrado"))?;
+
+        let shared = Arc::new(Shared {
+            queue: FrameQueue::new(),
+            closed: AtomicBool::new(false),
+            stop: AtomicBool::new(false),
+        });
+        let settings = Settings::new(
+            monitor,
+            CursorCaptureSettings::Default,
+            DrawBorderSettings::Default,
+            SecondaryWindowSettings::Default,
+            MinimumUpdateIntervalSettings::Default,
+            DirtyRegionSettings::Default,
+            ColorFormat::Bgra8,
+            shared.clone(),
+        );
+        let control = Handler::start_free_threaded(settings)
+            .map_err(|err| anyhow::anyhow!("falha ao iniciar o Windows Graphics Capture para o monitor: {err:?}"))?;
+        debug!(id, "captura WGC de monitor iniciada");
+        Ok(Self {
+            shared,
+            control: Some(control),
+        })
+    }
+
+    /// Próximo quadro BGRA, ou `None` se nada chegou em `timeout`.
+    pub fn next_frame(&self, timeout: Duration) -> Option<CapturedFrame> {
+        self.shared.queue.pop_timeout(timeout)
+    }
+
+    /// Quadros descartados porque o encoder atrasou.
+    pub fn dropped_frames(&self) -> u64 {
+        self.shared.queue.dropped()
+    }
+
+    pub fn state(&self) -> WindowState {
+        if self.shared.closed.load(Ordering::SeqCst) {
+            WindowState::Closed
+        } else {
+            WindowState::Running
+        }
+    }
+
+    /// Encerra o WGC e espera a thread dele terminar.
+    pub fn stop(&mut self) {
+        self.shared.stop.store(true, Ordering::SeqCst);
+        if let Some(control) = self.control.take()
+            && let Err(err) = control.stop()
+        {
+            warn!(error = ?err, "thread do WGC não terminou limpa");
+        }
+    }
+}
+
+// SAFETY: o HMONITOR é só um identificador opaco; a captura é usada por uma única thread por vez
+// (a thread de vídeo da transmissão), e o WGC aceita o handle de qualquer thread.
+unsafe impl Send for MonitorCapture {}
+
+impl Drop for MonitorCapture {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// Dispositivo de captura unificado (janela ou monitor).
+pub enum CaptureDevice {
+    Window(WindowCapture),
+    Monitor(MonitorCapture),
+}
+
+impl CaptureDevice {
+    pub fn next_frame(&self, timeout: Duration) -> Option<CapturedFrame> {
+        match self {
+            CaptureDevice::Window(c) => c.next_frame(timeout),
+            CaptureDevice::Monitor(c) => c.next_frame(timeout),
+        }
+    }
+
+    pub fn dropped_frames(&self) -> u64 {
+        match self {
+            CaptureDevice::Window(c) => c.dropped_frames(),
+            CaptureDevice::Monitor(c) => c.dropped_frames(),
+        }
+    }
+
+    pub fn state(&self) -> WindowState {
+        match self {
+            CaptureDevice::Window(c) => c.state(),
+            CaptureDevice::Monitor(c) => c.state(),
+        }
+    }
+
+    pub fn stop(&mut self) {
+        match self {
+            CaptureDevice::Window(c) => c.stop(),
+            CaptureDevice::Monitor(c) => c.stop(),
+        }
     }
 }
 

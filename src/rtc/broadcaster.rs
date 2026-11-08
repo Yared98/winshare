@@ -25,7 +25,7 @@ use ::rtc::rtp_transceiver::rtp_sender::{
 };
 
 use crate::capture::audio::{AudioCapture, CHANNELS, SAMPLE_RATE, SineSource};
-use crate::capture::video::{CapturedFrame, WindowCapture, WindowState, window_pid};
+use crate::capture::video::{CaptureDevice, CapturedFrame, MonitorCapture, WindowCapture, WindowState, window_pid};
 use crate::encode::h264::{H264Encoder, even_size};
 use crate::encode::opus::OpusEncoder;
 use crate::rtc::bitrate::{BitrateController, StreamHealth};
@@ -225,7 +225,7 @@ impl BroadcasterShared {
 /// Fonte de vídeo de uma transmissão.
 enum VideoInput {
     Test,
-    Window(WindowCapture),
+    Capture(CaptureDevice),
 }
 
 /// Fonte de áudio de uma transmissão.
@@ -233,6 +233,8 @@ enum AudioInput {
     Tone,
     /// Process Loopback do processo dono da janela.
     Process(u32),
+    /// Loopback do áudio do sistema inteiro (dispositivo padrão de saída).
+    System,
 }
 
 /// Tudo que a thread de vídeo precisa, para não estourar a lista de argumentos.
@@ -264,8 +266,18 @@ impl Broadcaster {
         let capture = WindowCapture::start(hwnd)
             .with_context(|| format!("não consegui capturar a janela {hwnd}"))?;
         let pid = window_pid(hwnd)?;
-        let broadcaster = Self::start(handle, VideoInput::Window(capture), AudioInput::Process(pid), bitrate_bps)?;
+        let broadcaster = Self::start(handle, VideoInput::Capture(CaptureDevice::Window(capture)), AudioInput::Process(pid), bitrate_bps)?;
         info!(hwnd, pid, "captura da janela iniciada");
+        Ok(broadcaster)
+    }
+
+    /// Inicia a captura de um monitor inteiro (vídeo WGC) e o áudio de todo o sistema (loopback padrão).
+    /// Se o áudio falhar, a transmissão segue só com vídeo e o aviso aparece em `notices`.
+    pub fn start_monitor(handle: Handle, monitor_id: u64, bitrate_bps: u32) -> Result<Self> {
+        let capture = MonitorCapture::start(monitor_id)
+            .with_context(|| format!("não consegui capturar o monitor {monitor_id}"))?;
+        let broadcaster = Self::start(handle, VideoInput::Capture(CaptureDevice::Monitor(capture)), AudioInput::System, bitrate_bps)?;
+        info!(monitor_id, "captura do monitor iniciada");
         Ok(broadcaster)
     }
 
@@ -416,8 +428,8 @@ fn run_video(job: VideoJob) {
     } = job;
     match input {
         VideoInput::Test => run_test_video(&handle, &track, ssrc, bitrate_bps, &stop, &shared),
-        VideoInput::Window(capture) => {
-            run_window_video(&handle, &track, ssrc, capture, bitrate_bps, &stop, &shared, &status)
+        VideoInput::Capture(capture) => {
+            run_capture_video(&handle, &track, ssrc, capture, bitrate_bps, &stop, &shared, &status)
         }
     }
     debug!("thread de vídeo encerrada");
@@ -486,11 +498,11 @@ fn run_test_video(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_window_video(
+fn run_capture_video(
     handle: &Handle,
     track: &FanoutTrack,
     ssrc: u32,
-    mut capture: WindowCapture,
+    mut capture: CaptureDevice,
     initial_bitrate_bps: u32,
     stop: &AtomicBool,
     shared: &BroadcasterShared,
@@ -505,7 +517,7 @@ fn run_window_video(
     while !stop.load(Ordering::SeqCst) {
         match capture.state() {
             WindowState::Closed => {
-                info!("janela fechada: encerrando a transmissão");
+                info!("fonte de captura encerrada");
                 status.end(NOTICE_WINDOW_CLOSED);
                 break;
             }
@@ -634,8 +646,40 @@ fn run_audio(
     match input {
         AudioInput::Tone => run_tone_audio(&handle, &track, ssrc, encoder, &stop),
         AudioInput::Process(pid) => run_process_audio(&handle, &track, ssrc, encoder, pid, &stop, &status),
+        AudioInput::System => run_system_audio(&handle, &track, ssrc, encoder, &stop, &status),
     }
     debug!("thread de áudio encerrada");
+}
+
+fn run_system_audio(
+    handle: &Handle,
+    track: &FanoutTrack,
+    ssrc: u32,
+    mut encoder: OpusEncoder,
+    stop: &AtomicBool,
+    status: &SourceStatus,
+) {
+    let (_capture, chunks) = match AudioCapture::start_system() {
+        Ok(started) => started,
+        Err(err) => {
+            warn!(error = %format!("{err:#}"), "sem áudio do sistema; transmitindo só vídeo");
+            status.add_notice(format!("sem áudio do sistema: {err:#}"));
+            return;
+        }
+    };
+    while !stop.load(Ordering::SeqCst) {
+        match chunks.recv_timeout(Duration::from_millis(100)) {
+            Ok(pcm) => match encoder.encode(&pcm) {
+                Ok(data) => write_audio(handle, track, ssrc, data, Instant::now()),
+                Err(err) => {
+                    error!(error = %format!("{err:#}"), "encoder de áudio parou");
+                    break;
+                }
+            },
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
 }
 
 fn run_tone_audio(

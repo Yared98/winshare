@@ -16,7 +16,7 @@ use tracing::{info, warn};
 use crate::rtc::broadcaster::Broadcaster;
 use crate::server::{AppState, LiveSession, ViewerKind, signaling};
 use crate::turn;
-use crate::windows_list::{WindowInfo, list_visible_windows};
+use crate::windows_list::{MonitorInfo, WindowInfo, list_monitors, list_visible_windows};
 
 const CONTROL_HTML: &str = include_str!("../../web/control.html");
 
@@ -24,6 +24,7 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/control", get(control_page))
         .route("/api/windows", get(windows))
+        .route("/api/monitors", get(monitors))
         .route("/api/start", post(start))
         .route("/api/stop", post(stop))
         .route("/api/status", get(status))
@@ -36,6 +37,7 @@ pub struct StartRequest {
     #[serde(default)]
     pub test: bool,
     pub hwnd: Option<u64>,
+    pub monitor: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -56,6 +58,7 @@ pub struct StatusBody {
     pub state: &'static str,
     pub source: Option<&'static str>,
     pub hwnd: Option<u64>,
+    pub monitor: Option<u64>,
     pub uptime_secs: Option<u64>,
     /// Taxa-alvo atual do vídeo e pior perda entre os espectadores (só ao vivo).
     pub stream: Option<crate::rtc::bitrate::StreamHealth>,
@@ -125,6 +128,14 @@ async fn windows() -> Result<Json<Vec<WindowInfo>>, ApiError> {
     Ok(Json(list))
 }
 
+async fn monitors() -> Result<Json<Vec<MonitorInfo>>, ApiError> {
+    let list = tokio::task::spawn_blocking(list_monitors)
+        .await
+        .map_err(|err| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .map_err(|err| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    Ok(Json(list))
+}
+
 async fn start(
     State(state): State<Arc<AppState>>,
     Json(request): Json<StartRequest>,
@@ -160,20 +171,26 @@ async fn start(
 
     let handle = tokio::runtime::Handle::current();
     let bitrate = state.config.video_bitrate_bps();
-    let (broadcaster, source, hwnd) = if request.test {
+    let (broadcaster, source, hwnd, monitor) = if request.test {
         let broadcaster = Broadcaster::start_test_source(handle, bitrate)
             .map_err(|err| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("{err:#}")))?;
-        (broadcaster, "test", None)
+        (broadcaster, "test", None, None)
     } else if let Some(hwnd) = request.hwnd {
         let broadcaster = Broadcaster::start_window(handle, hwnd, bitrate).map_err(|err| {
             warn!(error = %format!("{err:#}"), "não consegui iniciar a captura");
             ApiError::new(StatusCode::BAD_REQUEST, format!("{err:#}"))
         })?;
-        (broadcaster, "window", Some(hwnd))
+        (broadcaster, "window", Some(hwnd), None)
+    } else if let Some(mon) = request.monitor {
+        let broadcaster = Broadcaster::start_monitor(handle, mon, bitrate).map_err(|err| {
+            warn!(error = %format!("{err:#}"), "não consegui iniciar a captura do monitor");
+            ApiError::new(StatusCode::BAD_REQUEST, format!("{err:#}"))
+        })?;
+        (broadcaster, "monitor", None, Some(mon))
     } else {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
-            "escolha uma janela (hwnd) ou use \"test\": true",
+            "escolha um monitor (monitor), uma janela (hwnd) ou use \"test\": true",
         ));
     };
 
@@ -184,6 +201,7 @@ async fn start(
         broadcaster,
         source,
         hwnd,
+        monitor,
         started_at: std::time::Instant::now(),
         stop,
         ice_servers,
@@ -213,24 +231,25 @@ fn snapshot(state: &AppState) -> StatusBody {
         .as_ref()
         .filter(|session| !session.broadcaster.ended())
         .map(|session| session.broadcaster.health());
-    let (status, source, hwnd, uptime_secs, link) = match live.as_ref() {
+    let (status, source, hwnd, monitor, uptime_secs, link) = match live.as_ref() {
         Some(session) if session.broadcaster.ended() => {
             // A fonte encerrou (ex.: janela fechada): derruba os espectadores uma vez, sem remover a sessão.
             let _ = session.stop.send_replace(true);
             notices.extend(session.broadcaster.notices());
-            ("ended", Some(session.source), None, None, None)
+            ("ended", Some(session.source), None, None, None, None)
         }
         Some(session) => {
             notices.extend(session.broadcaster.notices());
             let uptime = session.started_at.elapsed().as_secs();
-            ("live", Some(session.source), session.hwnd, Some(uptime), Some(state.viewer_link()))
+            ("live", Some(session.source), session.hwnd, session.monitor, Some(uptime), Some(state.viewer_link()))
         }
-        None => ("idle", None, None, None, None),
+        None => ("idle", None, None, None, None, None),
     };
     StatusBody {
         state: status,
         source,
         hwnd,
+        monitor,
         uptime_secs,
         stream,
         viewers: state.viewers.load(Ordering::SeqCst),
@@ -267,5 +286,36 @@ mod tests {
         assert!(!local_origin(&with_origin("http://localhost.evil.com")));
         assert!(!local_origin(&with_origin("null")));
         assert!(!local_origin(&with_origin("http://localhost:7878/x")));
+    }
+
+    #[test]
+    fn start_request_deserializes_monitor() {
+        let json = r#"{"monitor": 123456}"#;
+        let req: super::StartRequest = serde_json::from_str(json).expect("StartRequest desserializa monitor");
+        assert_eq!(req.monitor, Some(123456));
+        assert_eq!(req.hwnd, None);
+        assert!(!req.test);
+    }
+
+    #[test]
+    fn status_with_source_monitor() {
+        let body = super::StatusBody {
+            state: "live",
+            source: Some("monitor"),
+            hwnd: None,
+            monitor: Some(654321),
+            uptime_secs: Some(42),
+            stream: None,
+            viewers: 1,
+            max_viewers: 10,
+            link: Some("https://example.com/s/xyz".to_string()),
+            tunnel: "none",
+            notices: Vec::new(),
+            viewer_list: Vec::new(),
+        };
+        let val = serde_json::to_value(&body).expect("StatusBody serializa");
+        assert_eq!(val["source"], "monitor");
+        assert_eq!(val["monitor"], 654321);
+        assert_eq!(val["hwnd"], serde_json::Value::Null);
     }
 }
