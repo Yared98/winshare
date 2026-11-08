@@ -16,7 +16,7 @@ use webrtc::peer_connection::{
     RTCPeerConnectionIceEvent, RTCPeerConnectionState,
 };
 
-use ::rtc::interceptor::{Attribute, Interceptor, Packet, Registry, Slot, StreamInfo, TaggedPacket};
+use ::rtc::interceptor::{Interceptor, Packet, Registry, Slot, StreamInfo, TaggedPacket};
 use ::rtc::peer_connection::configuration::interceptor_registry::register_default_interceptors;
 use ::rtc::peer_connection::configuration::media_engine::MediaEngine;
 use ::rtc::peer_connection::sdp::RTCSessionDescription;
@@ -100,7 +100,7 @@ impl Protocol<TaggedPacket, TaggedPacket, ()> for RtcpFeedbackInterceptor {
     type Error = Error;
     type Time = Instant;
 
-    fn handle_read(&mut self, mut msg: TaggedPacket) -> Result<(), Self::Error> {
+    fn handle_read(&mut self, msg: TaggedPacket) -> Result<(), Self::Error> {
         if let Packet::Rtcp(packets) = &msg.message.packet {
             for packet in packets {
                 if is_keyframe_request(packet) {
@@ -120,7 +120,8 @@ impl Protocol<TaggedPacket, TaggedPacket, ()> for RtcpFeedbackInterceptor {
                     }
                 }
             }
-            msg.message.add(Attribute::DeliverToApplication);
+            // Sem DeliverToApplication: o RTCP é consumido aqui e ninguém o lê na aplicação;
+            // entregá-lo acumularia pacotes num buffer sem leitor.
         }
         self.read_queue.push_back(msg);
         Ok(())
