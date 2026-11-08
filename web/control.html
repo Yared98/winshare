@@ -463,6 +463,34 @@
         <span id="stats-bitrate">Taxa: —</span>
       </div>
     </section>
+
+    <section>
+      <h2>Espectadores</h2>
+      <div style="overflow-x: auto;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px; text-align: left;">
+          <thead>
+            <tr style="border-bottom: 1px solid var(--card-border); color: var(--muted);">
+              <th style="padding: 8px 6px;">ID</th>
+              <th style="padding: 8px 6px;">Tempo conectado</th>
+              <th style="padding: 8px 6px;">Caminho</th>
+              <th style="padding: 8px 6px;">RTT</th>
+              <th style="padding: 8px 6px;">Perda</th>
+              <th style="padding: 8px 6px;">FPS</th>
+              <th style="padding: 8px 6px;">Taxa</th>
+              <th style="padding: 8px 6px;">Reconexões</th>
+              <th style="padding: 8px 6px;">Último motivo</th>
+            </tr>
+          </thead>
+          <tbody id="viewers-tbody">
+            <tr>
+              <td colspan="9" style="padding: 14px 6px; text-align: center; color: var(--muted);">
+                Nenhum espectador conectado.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
   </div>
 
   <!-- Coluna da Direita: Estado, Ações e Janelas -->
@@ -537,6 +565,7 @@
   const windowsSearch = $('windows-search');
   const btnRefresh = $('btn-refresh');
   const windowsList = $('windows-list');
+  const viewersTbody = $('viewers-tbody');
 
   // Estado local
   let currentStatus = null;
@@ -687,6 +716,46 @@
     }
 
     renderWindows();
+    renderViewers(status.viewer_list);
+  }
+
+  function renderViewers(list) {
+    if (!viewersTbody) return;
+    const viewers = Array.isArray(list) ? list : [];
+    if (viewers.length === 0) {
+      viewersTbody.innerHTML = '<tr><td colspan="9" style="padding: 14px 6px; text-align: center; color: var(--muted);">Nenhum espectador conectado.</td></tr>';
+      return;
+    }
+    viewersTbody.innerHTML = '';
+    for (const v of viewers) {
+      const tr = document.createElement('tr');
+      tr.style.borderBottom = '1px solid var(--card-border)';
+
+      const lossVal = Number(v.loss_pct) || 0;
+      const lossColor = lossVal > 5 ? 'color: var(--danger); font-weight: 600;' : '';
+
+      const pathText = v.path === 'relay' ? 'Relay' : 'Direto';
+      const rttText = typeof v.rtt_ms === 'number' ? `${v.rtt_ms} ms` : '—';
+      const lossText = typeof v.loss_pct === 'number' ? `${lossVal.toFixed(1)}%` : '—';
+      const fpsText = typeof v.fps === 'number' ? `${v.fps}` : '—';
+      const kbpsText = typeof v.kbps === 'number' ? `${v.kbps} kbps` : '—';
+      const reconnectsText = typeof v.reconnects === 'number' ? `${v.reconnects}` : '0';
+      const lastReasonText = v.last_reason ? v.last_reason : '—';
+      const connectedText = formatTime(v.connected_secs || 0);
+
+      tr.innerHTML = `
+        <td style="padding: 8px 6px; font-family: monospace; font-weight: 500;">${v.id}</td>
+        <td style="padding: 8px 6px;">${connectedText}</td>
+        <td style="padding: 8px 6px;">${pathText}</td>
+        <td style="padding: 8px 6px;">${rttText}</td>
+        <td style="padding: 8px 6px; ${lossColor}">${lossText}</td>
+        <td style="padding: 8px 6px;">${fpsText}</td>
+        <td style="padding: 8px 6px;">${kbpsText}</td>
+        <td style="padding: 8px 6px;">${reconnectsText}</td>
+        <td style="padding: 8px 6px;">${lastReasonText}</td>
+      `;
+      viewersTbody.appendChild(tr);
+    }
   }
 
   async function refreshStatus() {

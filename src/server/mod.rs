@@ -5,6 +5,7 @@
 pub mod api;
 pub mod signaling;
 
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -52,6 +53,12 @@ pub enum ViewerKind {
     Preview,
 }
 
+pub struct ViewerRecord {
+    pub id: String,
+    pub connected_at: std::time::Instant,
+    pub stats: signaling::ViewerStats,
+}
+
 pub struct AppState {
     pub config: Config,
     pub token: String,
@@ -60,6 +67,7 @@ pub struct AppState {
     pub live: std::sync::Mutex<Option<LiveSession>>,
     pub viewers: AtomicUsize,
     pub ports: PortPool,
+    pub viewers_health: std::sync::Mutex<HashMap<String, ViewerRecord>>,
 }
 
 /// Vaga de espectador; libera ao ser descartada.
@@ -83,6 +91,7 @@ impl AppState {
             live: std::sync::Mutex::new(None),
             viewers: AtomicUsize::new(0),
             ports,
+            viewers_health: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -152,6 +161,56 @@ impl AppState {
     pub fn viewer_link(&self) -> String {
         format!("{}/s/{}", public_base_url(&self.config), self.token)
     }
+
+    pub fn register_viewer(&self, id: String) {
+        let mut map = self.viewers_health.lock().expect("viewers_health poisoned");
+        map.insert(
+            id.clone(),
+            ViewerRecord {
+                id,
+                connected_at: std::time::Instant::now(),
+                stats: signaling::ViewerStats::default(),
+            },
+        );
+    }
+
+    pub fn update_viewer_stats(&self, id: &str, stats: signaling::ViewerStats) {
+        let mut map = self.viewers_health.lock().expect("viewers_health poisoned");
+        if let Some(record) = map.get_mut(id) {
+            record.stats = stats;
+        }
+    }
+
+    pub fn remove_viewer(&self, id: &str) {
+        let mut map = self.viewers_health.lock().expect("viewers_health poisoned");
+        map.remove(id);
+    }
+
+    pub fn viewer_list(&self) -> Vec<api::ViewerStatusItem> {
+        let map = self.viewers_health.lock().expect("viewers_health poisoned");
+        let mut list: Vec<api::ViewerStatusItem> = map
+            .values()
+            .map(|r| api::ViewerStatusItem {
+                id: r.id.clone(),
+                connected_secs: r.connected_at.elapsed().as_secs(),
+                path: r.stats.path.clone(),
+                rtt_ms: r.stats.rtt_ms,
+                loss_pct: r.stats.loss_pct,
+                fps: r.stats.fps,
+                kbps: r.stats.kbps,
+                reconnects: r.stats.reconnects,
+                last_reason: r.stats.last_reason.clone(),
+            })
+            .collect();
+        list.sort_by(|a, b| b.connected_secs.cmp(&a.connected_secs).then_with(|| a.id.cmp(&b.id)));
+        list
+    }
+
+    pub fn request_keyframe(&self) {
+        if let Some(session) = self.live.lock().expect("live poisoned").as_ref() {
+            session.broadcaster.request_keyframe();
+        }
+    }
 }
 
 pub fn public_base_url(config: &Config) -> String {
@@ -189,14 +248,17 @@ async fn viewer_page_without_token() -> Html<&'static str> {
 }
 
 async fn viewer_socket(
-    ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
     Path(token): Path<String>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
 ) -> Response {
     if token != state.token {
         return StatusCode::NOT_FOUND.into_response();
     }
-    ws.on_upgrade(move |socket| signaling::handle_viewer(socket, state, ViewerKind::Public))
+    let client_ip = signaling::client_ip(&headers, peer_addr);
+    ws.on_upgrade(move |socket| signaling::handle_viewer(socket, state, ViewerKind::Public, client_ip))
 }
 
 /// Middleware: só aceita requisições de loopback, sem cabeçalhos de proxy e com Host local.
@@ -527,5 +589,106 @@ mod tests {
     #[test]
     fn stop_without_session_is_noop() {
         assert!(!state().stop_live());
+    }
+
+    #[test]
+    fn viewer_health_registry_tracks_and_removes() {
+        let state = state();
+        assert!(state.viewer_list().is_empty());
+
+        state.register_viewer("a1b2c3".to_string());
+        let list = state.viewer_list();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, "a1b2c3");
+        assert_eq!(list[0].path, "direct");
+        assert_eq!(list[0].rtt_ms, 0);
+
+        state.update_viewer_stats(
+            "a1b2c3",
+            signaling::ViewerStats {
+                rtt_ms: 35,
+                loss_pct: 1.2,
+                fps: 59,
+                kbps: 4500,
+                path: "relay".to_string(),
+                reconnects: 2,
+                last_reason: "travou".to_string(),
+            },
+        );
+
+        let list = state.viewer_list();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].rtt_ms, 35);
+        assert_eq!(list[0].loss_pct, 1.2);
+        assert_eq!(list[0].fps, 59);
+        assert_eq!(list[0].kbps, 4500);
+        assert_eq!(list[0].path, "relay");
+        assert_eq!(list[0].reconnects, 2);
+        assert_eq!(list[0].last_reason, "travou");
+
+        state.remove_viewer("a1b2c3");
+        assert!(state.viewer_list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn status_includes_viewer_list() {
+        let state = state();
+        let app = control_router(state.clone());
+
+        // Status inicial: viewer_list vazio
+        let req = with_peer(
+            HttpRequest::builder()
+                .uri("/api/status")
+                .header(HOST, "127.0.0.1:7878")
+                .body(Body::empty())
+                .unwrap(),
+            SocketAddr::from(([127, 0, 0, 1], 5000)),
+        );
+        let res = app.clone().oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let list = json["viewer_list"].as_array().expect("viewer_list é lista");
+        assert!(list.is_empty());
+
+        // Registra espectador público
+        state.register_viewer("x9y8z7".to_string());
+        state.update_viewer_stats(
+            "x9y8z7",
+            signaling::ViewerStats {
+                rtt_ms: 40,
+                loss_pct: 0.5,
+                fps: 60,
+                kbps: 6000,
+                path: "direct".to_string(),
+                reconnects: 0,
+                last_reason: "iniciou".to_string(),
+            },
+        );
+
+        let req2 = with_peer(
+            HttpRequest::builder()
+                .uri("/api/status")
+                .header(HOST, "127.0.0.1:7878")
+                .body(Body::empty())
+                .unwrap(),
+            SocketAddr::from(([127, 0, 0, 1], 5000)),
+        );
+        let res2 = app.oneshot(req2).await.unwrap();
+        let body2 = axum::body::to_bytes(res2.into_body(), usize::MAX).await.unwrap();
+        let json2: serde_json::Value = serde_json::from_slice(&body2).unwrap();
+        let list2 = json2["viewer_list"].as_array().expect("viewer_list é lista");
+        assert_eq!(list2.len(), 1);
+        assert_eq!(list2[0]["id"], "x9y8z7");
+        assert_eq!(list2[0]["path"], "direct");
+        assert_eq!(list2[0]["rtt_ms"], 40);
+        assert_eq!(list2[0]["fps"], 60);
+        assert_eq!(list2[0]["kbps"], 6000);
+        assert_eq!(list2[0]["last_reason"], "iniciou");
+
+        // Preview não altera viewer_list
+        let _ = state.join_viewer(ViewerKind::Preview);
+        assert_eq!(state.viewer_list().len(), 1);
+
+        state.remove_viewer("x9y8z7");
     }
 }
