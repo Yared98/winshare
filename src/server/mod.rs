@@ -38,10 +38,18 @@ pub fn generate_token() -> String {
 pub struct LiveSession {
     pub broadcaster: Broadcaster,
     pub source: &'static str,
+    pub hwnd: Option<u64>,
+    pub started_at: std::time::Instant,
     /// Ao receber `true`, os WebSockets dos espectadores encerram.
     pub stop: watch::Sender<bool>,
     /// Servidores ICE atuais (STUN + TURN); o TURN do Cloudflare é renovado em segundo plano.
     pub ice_servers: SharedIceServers,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewerKind {
+    Public,
+    Preview,
 }
 
 pub struct AppState {
@@ -78,13 +86,14 @@ impl AppState {
         }
     }
 
-    /// Reserva uma vaga e devolve as tracks, o canal de parada e a lista ICE atual da transmissão.
+    /// Reserva uma vaga (se público) e devolve as tracks, o canal de parada e a lista ICE atual da transmissão.
     #[allow(clippy::type_complexity)]
     pub fn join_viewer(
         self: &Arc<Self>,
+        kind: ViewerKind,
     ) -> Result<
         (
-            ViewerSlot,
+            Option<ViewerSlot>,
             Vec<Arc<dyn TrackLocal>>,
             watch::Receiver<bool>,
             Vec<IceServer>,
@@ -98,21 +107,29 @@ impl AppState {
         }
         // Keyframe para o peer novo decodificar já no primeiro quadro.
         session.broadcaster.request_keyframe();
-        let max = self.config.max_viewers;
-        self.viewers
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                (n < max).then_some(n + 1)
-            })
-            .map_err(|_| "limite de espectadores atingido")?;
+
+        let slot = match kind {
+            ViewerKind::Public => {
+                let max = self.config.max_viewers;
+                self.viewers
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                        (n < max).then_some(n + 1)
+                    })
+                    .map_err(|_| "limite de espectadores atingido")?;
+                Some(ViewerSlot {
+                    state: self.clone(),
+                })
+            }
+            ViewerKind::Preview => None,
+        };
+
         let ice = session
             .ice_servers
             .lock()
             .expect("ice poisoned")
             .clone();
         Ok((
-            ViewerSlot {
-                state: self.clone(),
-            },
+            slot,
             session.broadcaster.tracks(),
             session.stop.subscribe(),
             ice,
@@ -179,7 +196,7 @@ async fn viewer_socket(
     if token != state.token {
         return StatusCode::NOT_FOUND.into_response();
     }
-    ws.on_upgrade(move |socket| signaling::handle_viewer(socket, state))
+    ws.on_upgrade(move |socket| signaling::handle_viewer(socket, state, ViewerKind::Public))
 }
 
 /// Middleware: só aceita requisições de loopback, sem cabeçalhos de proxy e com Host local.
@@ -313,16 +330,22 @@ mod tests {
     #[tokio::test]
     async fn control_api_refuses_remote_clients() {
         let app = control_router(state());
-        let request = with_peer(
-            HttpRequest::builder()
-                .uri("/api/status")
-                .header(HOST, "localhost:7878")
-                .body(Body::empty())
-                .unwrap(),
-            SocketAddr::from(([192, 168, 1, 50], 5000)),
-        );
-        let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        for uri in ["/api/status", "/api/preview"] {
+            let request = with_peer(
+                HttpRequest::builder()
+                    .uri(uri)
+                    .header(HOST, "localhost:7878")
+                    .body(Body::empty())
+                    .unwrap(),
+                SocketAddr::from(([192, 168, 1, 50], 5000)),
+            );
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "{uri} deve recusar cliente remoto"
+            );
+        }
     }
 
     #[tokio::test]
@@ -343,7 +366,7 @@ mod tests {
     #[tokio::test]
     async fn public_port_has_no_control_routes() {
         let app = public_router(state());
-        for uri in ["/control", "/api/status", "/api/start", "/api/windows"] {
+        for uri in ["/control", "/api/status", "/api/start", "/api/windows", "/api/preview"] {
             let request = with_peer(
                 HttpRequest::builder()
                     .uri(uri)
@@ -359,6 +382,109 @@ mod tests {
                 "{uri} não deveria existir"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn preview_does_not_change_viewers_and_works_when_full() {
+        let mut config = Config::default();
+        config.max_viewers = 2;
+        let state = Arc::new(AppState::new(config, "a".repeat(32), vec![]));
+        let broadcaster =
+            Broadcaster::start_test_source(tokio::runtime::Handle::current(), 100_000).unwrap();
+        let (stop, _) = watch::channel(false);
+        let ice_servers = Arc::new(std::sync::Mutex::new(vec![]));
+        *state.live.lock().unwrap() = Some(LiveSession {
+            broadcaster,
+            source: "test",
+            hwnd: None,
+            started_at: std::time::Instant::now(),
+            stop,
+            ice_servers,
+        });
+
+        // 1º espectador público ocupa vaga
+        let slot1 = state.join_viewer(ViewerKind::Public).expect("v1 joins");
+        assert!(slot1.0.is_some());
+        assert_eq!(state.viewers.load(Ordering::SeqCst), 1);
+
+        // 2º espectador público ocupa vaga
+        let slot2 = state.join_viewer(ViewerKind::Public).expect("v2 joins");
+        assert!(slot2.0.is_some());
+        assert_eq!(state.viewers.load(Ordering::SeqCst), 2);
+
+        // 3º espectador público é barrado por limite
+        match state.join_viewer(ViewerKind::Public) {
+            Err(err) => assert_eq!(err, "limite de espectadores atingido"),
+            Ok(_) => panic!("deveria ter falhado por atingir limite de espectadores"),
+        }
+
+        // Preview funciona mesmo com viewers == max_viewers e NÃO altera viewers
+        let preview = state.join_viewer(ViewerKind::Preview).expect("preview joins");
+        assert!(preview.0.is_none());
+        assert_eq!(state.viewers.load(Ordering::SeqCst), 2);
+        drop(preview);
+        assert_eq!(state.viewers.load(Ordering::SeqCst), 2);
+
+        // Liberar uma vaga permite novo público e preview continua sem alterar
+        drop(slot1);
+        assert_eq!(state.viewers.load(Ordering::SeqCst), 1);
+        let preview2 = state.join_viewer(ViewerKind::Preview).expect("preview2 joins");
+        assert!(preview2.0.is_none());
+        assert_eq!(state.viewers.load(Ordering::SeqCst), 1);
+
+        drop(slot2);
+        state.stop_live();
+    }
+
+    #[tokio::test]
+    async fn status_body_reports_hwnd_and_uptime_only_when_live() {
+        let state = state();
+        let app = control_router(state.clone());
+        let req = with_peer(
+            HttpRequest::builder()
+                .uri("/api/status")
+                .header(HOST, "127.0.0.1:7878")
+                .body(Body::empty())
+                .unwrap(),
+            SocketAddr::from(([127, 0, 0, 1], 5000)),
+        );
+        let res = app.clone().oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["state"], "idle");
+        assert!(json["hwnd"].is_null());
+        assert!(json["uptime_secs"].is_null());
+
+        // Agora com transmissão ao vivo
+        let broadcaster =
+            Broadcaster::start_test_source(tokio::runtime::Handle::current(), 100_000).unwrap();
+        let (stop, _) = watch::channel(false);
+        let ice_servers = Arc::new(std::sync::Mutex::new(vec![]));
+        *state.live.lock().unwrap() = Some(LiveSession {
+            broadcaster,
+            source: "window",
+            hwnd: Some(12345),
+            started_at: std::time::Instant::now(),
+            stop,
+            ice_servers,
+        });
+
+        let req = with_peer(
+            HttpRequest::builder()
+                .uri("/api/status")
+                .header(HOST, "127.0.0.1:7878")
+                .body(Body::empty())
+                .unwrap(),
+            SocketAddr::from(([127, 0, 0, 1], 5000)),
+        );
+        let res = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["state"], "live");
+        assert_eq!(json["hwnd"], 12345);
+        assert!(json["uptime_secs"].as_u64().is_some());
+
+        state.stop_live();
     }
 
     #[tokio::test]

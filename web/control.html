@@ -3,144 +3,1105 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Controle</title>
+<title>Controle de Transmissão</title>
 <style>
-  :root { --bg: #0f1115; --fg: #e8eaf0; --muted: #9aa3b2; --card: #171a21; --accent: #4f8cff; --danger: #e5484d; }
-  @media (prefers-color-scheme: light) {
-    :root:not([data-theme="dark"]) { --bg: #f5f6fa; --fg: #1b1f29; --muted: #5b6475; --card: #ffffff; --accent: #2563eb; --danger: #d93636; }
+  :root {
+    --bg: #0f1115;
+    --fg: #e8eaf0;
+    --muted: #9aa3b2;
+    --card: #171a21;
+    --card-border: rgba(255, 255, 255, 0.08);
+    --accent: #4f8cff;
+    --accent-hover: #3b74db;
+    --danger: #e5484d;
+    --danger-hover: #c93b40;
+    --success: #30a46c;
+    --live-badge: #e5484d;
+    --input-bg: #101217;
+    --input-border: #2a2e39;
+    --item-hover: rgba(255, 255, 255, 0.04);
+    --active-item: rgba(79, 140, 255, 0.12);
+    --active-border: #4f8cff;
   }
-  :root[data-theme="light"] { --bg: #f5f6fa; --fg: #1b1f29; --muted: #5b6475; --card: #ffffff; --accent: #2563eb; --danger: #d93636; }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f5f6fa;
+      --fg: #1b1f29;
+      --muted: #5b6475;
+      --card: #ffffff;
+      --card-border: rgba(0, 0, 0, 0.08);
+      --accent: #2563eb;
+      --accent-hover: #1d4ed8;
+      --danger: #d93636;
+      --danger-hover: #b91c1c;
+      --success: #16a34a;
+      --live-badge: #dc2626;
+      --input-bg: #f9fafb;
+      --input-border: #d1d5db;
+      --item-hover: rgba(0, 0, 0, 0.02);
+      --active-item: rgba(37, 99, 235, 0.08);
+      --active-border: #2563eb;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f5f6fa;
+    --fg: #1b1f29;
+    --muted: #5b6475;
+    --card: #ffffff;
+    --card-border: rgba(0, 0, 0, 0.08);
+    --accent: #2563eb;
+    --accent-hover: #1d4ed8;
+    --danger: #d93636;
+    --danger-hover: #b91c1c;
+    --success: #16a34a;
+    --live-badge: #dc2626;
+    --input-bg: #f9fafb;
+    --input-border: #d1d5db;
+    --item-hover: rgba(0, 0, 0, 0.02);
+    --active-item: rgba(37, 99, 235, 0.08);
+    --active-border: #2563eb;
+  }
+
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; padding: 16px; }
-  main { max-width: 760px; margin: 0 auto; display: grid; gap: 16px; }
-  section { background: var(--card); border-radius: 10px; padding: 16px; }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  h2 { font-size: 16px; margin: 0 0 12px; }
-  p { margin: 4px 0; color: var(--muted); font-size: 14px; }
-  .link { word-break: break-all; font-family: ui-monospace, monospace; font-size: 14px; color: var(--fg); }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
-  button.secondary { background: transparent; color: var(--accent); }
-  button.danger { background: var(--danger); border-color: var(--danger); }
-  button:disabled { opacity: .5; cursor: default; }
-  ul { list-style: none; padding: 0; margin: 0; max-height: 320px; overflow: auto; }
-  li { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 8px 4px; border-bottom: 1px solid rgba(127,127,127,.2); }
-  li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .notice { color: var(--danger); }
-  .muted { color: var(--muted); }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 16px;
+    overflow-x: hidden;
+  }
+
+  header {
+    max-width: 1400px;
+    margin: 0 auto 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  header h1 {
+    font-size: 20px;
+    margin: 0;
+    font-weight: 600;
+  }
+  header p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  [hidden] { display: none !important; }
+  .container {
+    max-width: 1400px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+    gap: 20px;
+    align-items: start;
+  }
+  @media (max-width: 960px) {
+    .container {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .panel {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  section {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+
+  h2 {
+    font-size: 16px;
+    margin: 0 0 12px;
+    font-weight: 600;
+  }
+
+  /* Preview */
+  .stage-box {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    background: #000;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #000;
+    display: block;
+  }
+  .stage-placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    background: #000;
+    color: var(--muted);
+    text-align: center;
+    padding: 16px;
+  }
+  .stage-placeholder span {
+    font-size: 18px;
+    color: #fff;
+    font-weight: 500;
+  }
+  .stage-placeholder p {
+    margin: 0;
+    font-size: 14px;
+    max-width: 320px;
+  }
+  .stage-overlay-top {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    right: 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    pointer-events: none;
+  }
+  .stage-overlay-top > * {
+    pointer-events: auto;
+  }
+  .live-badge-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(0, 0, 0, 0.7);
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    backdrop-filter: blur(4px);
+  }
+  .live-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--live-badge);
+    box-shadow: 0 0 8px var(--live-badge);
+  }
+  .live-tag {
+    color: #fff;
+    font-weight: 700;
+  }
+  .live-uptime {
+    color: #e2e8f0;
+    font-variant-numeric: tabular-nums;
+    font-weight: 500;
+  }
+
+  .preview-stats-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px 4px 2px;
+    font-size: 13px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Form controls & Buttons */
+  button, input {
+    font: inherit;
+    border-radius: 6px;
+    border: 1px solid var(--accent);
+    cursor: pointer;
+  }
+  button {
+    padding: 8px 14px;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 500;
+    transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+  }
+  button:hover:not(:disabled) {
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
+  }
+  button.secondary {
+    background: transparent;
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  button.secondary:hover:not(:disabled) {
+    background: rgba(79, 140, 255, 0.1);
+  }
+  button.danger {
+    background: var(--danger);
+    border-color: var(--danger);
+    color: #fff;
+  }
+  button.danger:hover:not(:disabled) {
+    background: var(--danger-hover);
+    border-color: var(--danger-hover);
+  }
+  button.stage-btn {
+    background: rgba(0, 0, 0, 0.7);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    padding: 5px 10px;
+    font-size: 13px;
+    backdrop-filter: blur(4px);
+  }
+  button.stage-btn:hover:not(:disabled) {
+    background: rgba(0, 0, 0, 0.9);
+    border-color: #fff;
+  }
+  button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  input[type="text"], input[type="search"] {
+    background: var(--input-bg);
+    color: var(--fg);
+    border: 1px solid var(--input-border);
+    padding: 8px 12px;
+    cursor: text;
+    width: 100%;
+  }
+  input[type="search"]::-webkit-search-cancel-button {
+    cursor: pointer;
+  }
+
+  .status-grid {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 8px 14px;
+    align-items: baseline;
+    font-size: 14px;
+    margin-bottom: 12px;
+  }
+  .status-label {
+    color: var(--muted);
+  }
+  .status-val {
+    word-break: break-all;
+    font-weight: 500;
+  }
+
+  .badge-state {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .badge-idle {
+    background: rgba(127, 127, 127, 0.2);
+    color: var(--muted);
+  }
+  .badge-live {
+    background: rgba(229, 72, 77, 0.2);
+    color: var(--danger);
+  }
+  .badge-ended {
+    background: rgba(234, 179, 8, 0.2);
+    color: #eab308;
+  }
+
+  .link-box {
+    min-width: 0;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    background: var(--input-bg);
+    border: 1px solid var(--input-border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    margin-top: 8px;
+  }
+  .link-text {
+    flex: 1;
+    min-width: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 13px;
+    color: var(--fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    user-select: all;
+  }
+
+  .actions-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 14px;
+  }
+
+  .notice-box {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border-radius: 6px;
+    background: rgba(229, 72, 77, 0.12);
+    border: 1px solid rgba(229, 72, 77, 0.3);
+    color: var(--danger);
+    font-size: 13px;
+    line-height: 1.4;
+  }
+  .notice-box[hidden] {
+    display: none;
+  }
+
+  /* Janelas */
+  .windows-header {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  .windows-header input {
+    flex: 1;
+  }
+  ul.windows-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    max-height: 380px;
+    overflow-y: auto;
+    border: 1px solid var(--input-border);
+    border-radius: 6px;
+  }
+  li.window-item {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: center;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--card-border);
+    transition: background 0.1s;
+  }
+  li.window-item:last-child {
+    border-bottom: none;
+  }
+  li.window-item:hover {
+    background: var(--item-hover);
+  }
+  li.window-item.active {
+    background: var(--active-item);
+    border-left: 3px solid var(--active-border);
+  }
+  .window-meta {
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .window-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .window-pid {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .muted-note {
+    font-size: 12px;
+    color: var(--muted);
+    margin: 8px 0 0;
+    line-height: 1.4;
+  }
 </style>
 </head>
 <body>
-<main>
-  <section>
-    <h1>Controle do compartilhamento</h1>
-    <p>Esta página só funciona neste computador.</p>
-  </section>
 
-  <section>
-    <h2>Transmissão</h2>
-    <div class="row">
-      <span id="state">Parada</span>
-      <span class="muted" id="viewers">0 espectadores</span>
-    </div>
-    <p class="link" id="link"></p>
-    <div class="row" style="margin-top:12px">
-      <button id="test" class="secondary" type="button">Iniciar fonte de teste</button>
-      <button id="stop" class="danger" type="button" disabled>Parar</button>
-    </div>
-    <p id="notices" class="notice"></p>
-  </section>
+<header>
+  <div>
+    <h1>Controle de Compartilhamento</h1>
+    <p>Painel de operação local (127.0.0.1)</p>
+  </div>
+</header>
 
-  <section>
-    <h2>Janelas</h2>
-    <div class="row" style="margin-bottom:8px">
-      <button id="refresh" class="secondary" type="button">Atualizar lista</button>
-    </div>
-    <ul id="windows"><li><span class="muted">Carregando…</span></li></ul>
-    <p>Janela minimizada não gera imagem na captura. Use a janela em primeiro plano ou sem minimizar.</p>
-  </section>
-</main>
+<div class="container">
+  <!-- Coluna da Esquerda: Preview -->
+  <div class="panel">
+    <section>
+      <h2>Transmissão ao vivo</h2>
+      <div class="stage-box">
+        <video id="preview-video" autoplay playsinline muted></video>
+        <div id="preview-placeholder" class="stage-placeholder">
+          <span>Nenhuma transmissão</span>
+          <p>Selecione uma janela abaixo ou inicie a fonte de teste para transmitir.</p>
+        </div>
+        <div id="preview-overlay-top" class="stage-overlay-top" hidden>
+          <div class="live-badge-group">
+            <span class="live-dot"></span>
+            <span class="live-tag">AO VIVO</span>
+            <span id="preview-uptime" class="live-uptime">00:00</span>
+          </div>
+          <button id="btn-audio" class="stage-btn" type="button" aria-label="Alternar áudio">Ouvir</button>
+        </div>
+      </div>
+      <div class="preview-stats-bar">
+        <span id="stats-res">Resolução: —</span>
+        <span id="stats-fps">FPS: —</span>
+        <span id="stats-bitrate">Taxa: —</span>
+      </div>
+    </section>
+  </div>
+
+  <!-- Coluna da Direita: Estado, Ações e Janelas -->
+  <div class="panel">
+    <section>
+      <h2>Estado</h2>
+      <div class="status-grid">
+        <span class="status-label">Estado:</span>
+        <span class="status-val"><span id="state-badge" class="badge-state badge-idle">Parada</span></span>
+
+        <span class="status-label">Espectadores:</span>
+        <span class="status-val" id="viewers-count">0 de 10 espectadores</span>
+
+        <span class="status-label">Janela:</span>
+        <span class="status-val" id="source-name">—</span>
+
+        <span class="status-label">Link:</span>
+        <div class="status-val">
+          <div id="link-container" class="link-box">
+            <span id="link-text" class="link-text">—</span>
+            <button id="btn-copy" type="button" class="secondary" style="padding:4px 8px;font-size:12px">Copiar</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="actions-row">
+        <button id="btn-start-test" class="secondary" type="button">Iniciar fonte de teste</button>
+        <button id="btn-stop" class="danger" type="button" disabled>Parar</button>
+      </div>
+
+      <div id="notices-box" class="notice-box" hidden></div>
+    </section>
+
+    <section>
+      <h2>Janelas disponíveis</h2>
+      <div class="windows-header">
+        <input id="windows-search" type="search" placeholder="Buscar por título…" autocomplete="off" aria-label="Buscar janelas">
+        <button id="btn-refresh" class="secondary" type="button">Atualizar</button>
+      </div>
+      <ul id="windows-list" class="windows-list">
+        <li class="window-item"><span class="window-title" style="color:var(--muted)">Carregando janelas…</span></li>
+      </ul>
+      <p class="muted-note">Janela minimizada não gera imagem na captura. Use a janela em primeiro plano ou sem minimizar.</p>
+    </section>
+  </div>
+</div>
+
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
-  let polling = null;
+
+  // Elementos do DOM
+  const video = $('preview-video');
+  const previewPlaceholder = $('preview-placeholder');
+  const previewOverlayTop = $('preview-overlay-top');
+  const previewUptime = $('preview-uptime');
+  const btnAudio = $('btn-audio');
+  const statsRes = $('stats-res');
+  const statsFps = $('stats-fps');
+  const statsBitrate = $('stats-bitrate');
+
+  const stateBadge = $('state-badge');
+  const viewersCount = $('viewers-count');
+  const sourceName = $('source-name');
+  const linkContainer = $('link-container');
+  const linkText = $('link-text');
+  const btnCopy = $('btn-copy');
+  const btnStartTest = $('btn-start-test');
+  const btnStop = $('btn-stop');
+  const noticesBox = $('notices-box');
+
+  const windowsSearch = $('windows-search');
+  const btnRefresh = $('btn-refresh');
+  const windowsList = $('windows-list');
+
+  // Estado local
+  let currentStatus = null;
+  let cachedWindows = [];
+  let pollTimer = null;
+  let copyFeedbackTimer = null;
+
+  let liveUptimeSecs = 0;
+  let liveUptimeStamp = 0;
+
+  // WebRTC Preview
+  let ws = null;
+  let pc = null;
+  let retries = 0;
+  let retryTimer = null;
+  let disconnectTimer = null;
+  let stalledTicks = 0;
+  let lastFrames = -1;
+  let prevBytes = -1;
+  let prevStatsTime = 0;
+  let prevFrames = -1;
+  let wsShouldBeConnected = false;
+
+  const RETRY_MS = 2000;
+  const MAX_RETRIES = 20;
 
   async function api(path, options) {
     const response = await fetch(path, options);
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.error || `Erro ${response.status}`);
+    if (!response.ok) {
+      const err = new Error(body.error || `Erro ${response.status}`);
+      err.status = response.status;
+      throw err;
+    }
     return body;
   }
 
-  function render(status) {
-    const live = status.state === 'live';
-    $('state').textContent = live ? 'Ao vivo' : (status.state === 'ended' ? 'Encerrada' : 'Parada');
-    $('viewers').textContent = `${status.viewers} de ${status.max_viewers} espectadores`;
-    $('link').textContent = status.link || '';
-    $('stop').disabled = !live;
-    $('test').disabled = live;
-    $('notices').textContent = (status.notices || []).join(' ');
+  function setNotices(list) {
+    const text = (list || []).filter(Boolean).join(' • ');
+    if (text) {
+      noticesBox.textContent = text;
+      noticesBox.hidden = false;
+    } else {
+      noticesBox.textContent = '';
+      noticesBox.hidden = true;
+    }
+  }
+
+  function formatTime(totalSecs) {
+    if (totalSecs < 0 || isNaN(totalSecs)) return '00:00';
+    const h = Math.floor(totalSecs / 3600);
+    const m = Math.floor((totalSecs % 3600) / 60);
+    const s = totalSecs % 60;
+    const mm = String(m).padStart(2, '0');
+    const ss = String(s).padStart(2, '0');
+    if (h > 0) {
+      return `${String(h).padStart(2, '0')}:${mm}:${ss}`;
+    }
+    return `${mm}:${ss}`;
+  }
+
+  function updateUptimeDisplay() {
+    if (currentStatus && currentStatus.state === 'live') {
+      const elapsed = Math.floor((Date.now() - liveUptimeStamp) / 1000);
+      const total = Math.max(0, liveUptimeSecs + elapsed);
+      previewUptime.textContent = formatTime(total);
+    }
+  }
+
+  setInterval(updateUptimeDisplay, 1000);
+
+  function resolveSourceTitle(status) {
+    if (status.state !== 'live') {
+      return status.state === 'ended' ? 'Encerrada' : 'Nenhuma';
+    }
+    if (status.source === 'test') {
+      return 'Fonte de teste';
+    }
+    if (status.hwnd) {
+      const found = cachedWindows.find((w) => String(w.hwnd) === String(status.hwnd));
+      if (found) {
+        return `${found.title} (PID ${found.pid})`;
+      }
+      return `Janela (HWND ${status.hwnd})`;
+    }
+    return 'Janela';
+  }
+
+  function renderStatus(status) {
+    currentStatus = status;
+    const isLive = status.state === 'live';
+
+    // Badge de estado
+    if (isLive) {
+      stateBadge.className = 'badge-state badge-live';
+      stateBadge.textContent = 'Ao vivo';
+    } else if (status.state === 'ended') {
+      stateBadge.className = 'badge-state badge-ended';
+      stateBadge.textContent = 'Encerrada';
+    } else {
+      stateBadge.className = 'badge-state badge-idle';
+      stateBadge.textContent = 'Parada';
+    }
+
+    // Espectadores
+    viewersCount.textContent = `${status.viewers} de ${status.max_viewers} espectadores`;
+
+    // Janela compartilhada
+    sourceName.textContent = resolveSourceTitle(status);
+
+    // Link
+    if (isLive && status.link) {
+      linkText.textContent = status.link;
+      btnCopy.style.display = 'inline-block';
+    } else {
+      linkText.textContent = 'Transmissão inativa';
+      btnCopy.style.display = 'none';
+    }
+
+    // Botões
+    btnStartTest.disabled = isLive;
+    btnStop.disabled = !isLive;
+
+    // Avisos
+    setNotices(status.notices);
+
+    // Controle de Preview e Uptime
+    if (isLive) {
+      previewPlaceholder.hidden = true;
+      previewOverlayTop.hidden = false;
+      if (typeof status.uptime_secs === 'number') {
+        liveUptimeSecs = status.uptime_secs;
+        liveUptimeStamp = Date.now();
+        updateUptimeDisplay();
+      }
+      if (!wsShouldBeConnected) {
+        wsShouldBeConnected = true;
+        connectPreview();
+      }
+    } else {
+      previewPlaceholder.hidden = false;
+      previewOverlayTop.hidden = true;
+      resetStats();
+      if (wsShouldBeConnected) {
+        wsShouldBeConnected = false;
+        disconnectPreview();
+      }
+    }
+
+    renderWindows();
   }
 
   async function refreshStatus() {
-    try { render(await api('/api/status')); } catch (err) { $('notices').textContent = err.message; }
+    try {
+      const status = await api('/api/status');
+      renderStatus(status);
+    } catch (err) {
+      setNotices([err.message]);
+    }
+  }
+
+  // Janelas
+  function renderWindows() {
+    const filter = (windowsSearch.value || '').trim().toLowerCase();
+    const filtered = cachedWindows.filter((w) => !filter || (w.title && w.title.toLowerCase().includes(filter)));
+
+    windowsList.innerHTML = '';
+    if (filtered.length === 0) {
+      const li = document.createElement('li');
+      li.className = 'window-item';
+      li.innerHTML = '<span class="window-title" style="color:var(--muted)">Nenhuma janela encontrada.</span>';
+      windowsList.appendChild(li);
+      return;
+    }
+
+    for (const w of filtered) {
+      const li = document.createElement('li');
+      li.className = 'window-item';
+
+      const isCurrentLive = currentStatus && currentStatus.state === 'live' && String(currentStatus.hwnd) === String(w.hwnd);
+      if (isCurrentLive) {
+        li.classList.add('active');
+      }
+
+      const meta = document.createElement('div');
+      meta.className = 'window-meta';
+
+      const title = document.createElement('span');
+      title.className = 'window-title';
+      title.textContent = w.title;
+      title.title = w.title;
+
+      const pid = document.createElement('span');
+      pid.className = 'window-pid';
+      pid.textContent = `PID ${w.pid} • HWND ${w.hwnd}`;
+
+      meta.append(title, pid);
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      if (isCurrentLive) {
+        btn.disabled = true;
+        btn.textContent = 'Transmitindo';
+      } else {
+        btn.className = 'secondary';
+        btn.textContent = 'Compartilhar';
+        btn.addEventListener('click', () => handleShareWindow(w));
+      }
+
+      li.append(meta, btn);
+      windowsList.appendChild(li);
+    }
   }
 
   async function loadWindows() {
-    const list = $('windows');
     try {
-      const windows = await api('/api/windows');
-      list.innerHTML = '';
-      if (windows.length === 0) {
-        list.innerHTML = '<li><span class="muted">Nenhuma janela visível.</span></li>';
-        return;
-      }
-      for (const w of windows) {
-        const item = document.createElement('li');
-        const title = document.createElement('span');
-        title.textContent = `${w.title} (PID ${w.pid})`;
-        const button = document.createElement('button');
-        button.className = 'secondary';
-        button.type = 'button';
-        button.textContent = 'Compartilhar';
-        button.addEventListener('click', () => start({ hwnd: w.hwnd, pid: w.pid }));
-        item.append(title, button);
-        list.append(item);
+      cachedWindows = await api('/api/windows');
+      renderWindows();
+      if (currentStatus) {
+        sourceName.textContent = resolveSourceTitle(currentStatus);
       }
     } catch (err) {
-      list.innerHTML = '';
-      const item = document.createElement('li');
-      const span = document.createElement('span');
-      span.className = 'notice';
-      span.textContent = err.message;
-      item.append(span);
-      list.append(item);
+      windowsList.innerHTML = '<li class="window-item"><span class="window-title" style="color:var(--danger)"></span></li>';
+      windowsList.querySelector('span').textContent = err.message;
     }
   }
 
-  async function start(body) {
+  async function handleShareWindow(w) {
+    if (currentStatus && currentStatus.state === 'live') {
+      alert('Já existe uma transmissão ativa. Pare a transmissão atual antes de iniciar outra.');
+      return;
+    }
     try {
-      render(await api('/api/start', {
+      const status = await api('/api/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      }));
+        body: JSON.stringify({ hwnd: w.hwnd }),
+      });
+      renderStatus(status);
     } catch (err) {
-      $('notices').textContent = err.message;
+      if (err.status === 409) {
+        alert('Já existe uma transmissão ativa. Pare a transmissão atual antes de iniciar outra.');
+      }
+      setNotices([err.message]);
     }
   }
 
-  async function stop() {
-    try { render(await api('/api/stop', { method: 'POST' })); } catch (err) { $('notices').textContent = err.message; }
+  async function startTestSource() {
+    try {
+      const status = await api('/api/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ test: true }),
+      });
+      renderStatus(status);
+    } catch (err) {
+      setNotices([err.message]);
+    }
   }
 
-  $('test').addEventListener('click', () => start({ test: true }));
-  $('stop').addEventListener('click', stop);
-  $('refresh').addEventListener('click', loadWindows);
+  async function stopTransmission() {
+    if (!confirm('Deseja realmente parar a transmissão?')) {
+      return;
+    }
+    try {
+      const status = await api('/api/stop', { method: 'POST' });
+      renderStatus(status);
+    } catch (err) {
+      setNotices([err.message]);
+    }
+  }
 
+  // Clipboard
+  btnCopy.addEventListener('click', async () => {
+    if (!currentStatus || !currentStatus.link) return;
+    try {
+      await navigator.clipboard.writeText(currentStatus.link);
+      clearTimeout(copyFeedbackTimer);
+      btnCopy.textContent = 'Copiado!';
+      copyFeedbackTimer = setTimeout(() => {
+        btnCopy.textContent = 'Copiar';
+      }, 2000);
+    } catch {
+      alert('Não foi possível copiar o link.');
+    }
+  });
+
+  // Áudio preview (Silenciar / Ouvir)
+  btnAudio.addEventListener('click', () => {
+    video.muted = !video.muted;
+    btnAudio.textContent = video.muted ? 'Ouvir' : 'Silenciar';
+    if (!video.muted) {
+      video.play().catch(() => {});
+    }
+  });
+
+  btnStartTest.addEventListener('click', startTestSource);
+  btnStop.addEventListener('click', stopTransmission);
+  btnRefresh.addEventListener('click', loadWindows);
+  windowsSearch.addEventListener('input', renderWindows);
+
+  // WebRTC Preview via /api/preview
+  function previewWsUrl() {
+    const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+    return `${scheme}://${location.host}/api/preview`;
+  }
+
+  function send(obj) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(obj));
+    }
+  }
+
+  function startPlayback() {
+    // Mantém muted por padrão para evitar eco local
+    const attempt = video.play();
+    if (attempt && attempt.catch) {
+      attempt.catch(() => {});
+    }
+  }
+
+  function closePeer() {
+    if (pc) {
+      try { pc.close(); } catch {}
+      pc = null;
+    }
+  }
+
+  function disconnectPreview() {
+    clearTimeout(retryTimer);
+    clearTimeout(disconnectTimer);
+    if (ws) {
+      ws.onclose = null;
+      try { ws.close(); } catch {}
+      ws = null;
+    }
+    closePeer();
+    video.srcObject = null;
+    resetStats();
+  }
+
+  function reconnectPreview() {
+    if (!wsShouldBeConnected) return;
+    if (ws) {
+      ws.onclose = null;
+      try { ws.close(); } catch {}
+      ws = null;
+    }
+    scheduleRetry();
+  }
+
+  function scheduleRetry() {
+    if (!wsShouldBeConnected) return;
+    closePeer();
+    if (retries >= MAX_RETRIES) {
+      setNotices(['Preview: conexão perdida com o servidor.']);
+      return;
+    }
+    retries += 1;
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(connectPreview, RETRY_MS);
+  }
+
+  function iceServersFrom(list) {
+    if (!Array.isArray(list) || list.length === 0) {
+      return [{ urls: 'stun:stun.l.google.com:19302' }];
+    }
+    return list;
+  }
+
+  async function handleOffer(sdp, iceServers) {
+    closePeer();
+    pc = new RTCPeerConnection({ iceServers: iceServersFrom(iceServers) });
+
+    pc.ontrack = (event) => {
+      if (event.streams && event.streams[0]) {
+        video.srcObject = event.streams[0];
+      } else {
+        const stream = video.srcObject instanceof MediaStream ? video.srcObject : new MediaStream();
+        stream.addTrack(event.track);
+        video.srcObject = stream;
+      }
+      startPlayback();
+    };
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        send({
+          type: 'ice',
+          candidate: {
+            candidate: event.candidate.candidate,
+            sdpMid: event.candidate.sdpMid,
+            sdpMLineIndex: event.candidate.sdpMLineIndex,
+          },
+        });
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (!pc) return;
+      clearTimeout(disconnectTimer);
+      if (pc.connectionState === 'connected') {
+        retries = 0;
+      }
+      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        reconnectPreview();
+      }
+      if (pc.connectionState === 'disconnected') {
+        disconnectTimer = setTimeout(reconnectPreview, 4000);
+      }
+    };
+
+    await pc.setRemoteDescription({ type: 'offer', sdp });
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    send({ type: 'answer', sdp: pc.localDescription.sdp });
+  }
+
+  function connectPreview() {
+    if (!wsShouldBeConnected) return;
+    try {
+      ws = new WebSocket(previewWsUrl());
+    } catch {
+      scheduleRetry();
+      return;
+    }
+
+    ws.onopen = () => {};
+    ws.onmessage = async (event) => {
+      let msg;
+      try { msg = JSON.parse(event.data); } catch { return; }
+      switch (msg.type) {
+        case 'offer':
+          try {
+            await handleOffer(msg.sdp, msg.ice_servers);
+          } catch {
+            setNotices(['Falha ao negociar conexão de preview.']);
+          }
+          break;
+        case 'ice':
+          if (pc && msg.candidate) {
+            try {
+              await pc.addIceCandidate({
+                candidate: msg.candidate.candidate,
+                sdpMid: msg.candidate.sdpMid,
+                sdpMLineIndex: msg.candidate.sdpMLineIndex,
+              });
+            } catch {}
+          }
+          break;
+        case 'error':
+          setNotices([msg.message]);
+          if (ws) ws.onclose = null;
+          closePeer();
+          break;
+      }
+    };
+
+    ws.onclose = () => {
+      if (wsShouldBeConnected) {
+        scheduleRetry();
+      }
+    };
+  }
+
+  function resetStats() {
+    statsRes.textContent = 'Resolução: —';
+    statsFps.textContent = 'FPS: —';
+    statsBitrate.textContent = 'Taxa: —';
+    lastFrames = -1;
+    stalledTicks = 0;
+    prevBytes = -1;
+    prevStatsTime = 0;
+    prevFrames = -1;
+  }
+
+  function updateStatsDisplay(stats) {
+    if (!stats || !stats.connected) {
+      resetStats();
+      return;
+    }
+    statsRes.textContent = stats.width && stats.height ? `Resolução: ${stats.width}×${stats.height}` : 'Resolução: —';
+    statsFps.textContent = stats.fps !== null ? `FPS: ${stats.fps}` : 'FPS: —';
+    statsBitrate.textContent = stats.kbps !== null ? `Taxa: ${stats.kbps} kbps` : 'Taxa: —';
+  }
+
+  // Vigia de travamento e coleta de getStats a cada 2 s (ignora document.hidden como no viewer)
+  setInterval(async () => {
+    send({ type: 'ping' });
+    if (!pc || pc.connectionState !== 'connected') {
+      stalledTicks = 0;
+      lastFrames = -1;
+      updateStatsDisplay(null);
+      return;
+    }
+    // Aba em segundo plano: o navegador pausa a decodificação; não é travamento.
+    if (document.hidden) {
+      stalledTicks = 0;
+      lastFrames = -1;
+      return;
+    }
+
+    let frames = 0;
+    let width = video.videoWidth || 0;
+    let height = video.videoHeight || 0;
+    let fps = null;
+    let kbps = null;
+
+    try {
+      const stats = await pc.getStats();
+      stats.forEach((r) => {
+        if (r.type === 'inbound-rtp' && r.kind === 'video') {
+          frames = r.framesDecoded || 0;
+          if (r.frameWidth) width = r.frameWidth;
+          if (r.frameHeight) height = r.frameHeight;
+          if (r.framesPerSecond !== undefined) {
+            fps = Math.round(r.framesPerSecond);
+          } else if (prevStatsTime && prevFrames >= 0) {
+            const deltaSec = (r.timestamp - prevStatsTime) / 1000;
+            if (deltaSec > 0 && frames >= prevFrames) {
+              fps = Math.round((frames - prevFrames) / deltaSec);
+            }
+          }
+          if (prevBytes >= 0 && prevStatsTime) {
+            const deltaMs = r.timestamp - prevStatsTime;
+            if (deltaMs > 0 && r.bytesReceived >= prevBytes) {
+              kbps = Math.round(((r.bytesReceived - prevBytes) * 8) / deltaMs);
+            }
+          }
+          prevBytes = r.bytesReceived || 0;
+          prevStatsTime = r.timestamp;
+          prevFrames = frames;
+        }
+      });
+    } catch {
+      return;
+    }
+
+    updateStatsDisplay({
+      connected: true,
+      width,
+      height,
+      fps,
+      kbps,
+    });
+
+    if (frames > lastFrames) {
+      lastFrames = frames;
+      stalledTicks = 0;
+      return;
+    }
+    stalledTicks += 1;
+    if (stalledTicks >= 3) {
+      stalledTicks = 0;
+      lastFrames = -1;
+      reconnectPreview();
+    }
+  }, 2000);
+
+  document.addEventListener('visibilitychange', () => { stalledTicks = 0; lastFrames = -1; });
+
+  // Inicialização
   loadWindows();
   refreshStatus();
-  polling = setInterval(refreshStatus, 2000);
+  pollTimer = setInterval(refreshStatus, 2000);
 })();
 </script>
 </body>
