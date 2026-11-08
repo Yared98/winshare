@@ -113,6 +113,9 @@
   setInterval(async () => {
     send({ type: 'ping' }); // mantém o WebSocket vivo atrás do Cloudflare
     if (!pc || pc.connectionState !== 'connected') { stalledTicks = 0; lastFrames = -1; return; }
+    // Aba em segundo plano: o navegador para de decodificar o vídeo de propósito.
+    // Não é travamento; reconectar aqui gerava um laço de reconexões.
+    if (document.hidden) { stalledTicks = 0; lastFrames = -1; return; }
     let frames = 0;
     try {
       const stats = await pc.getStats();
@@ -122,6 +125,9 @@
     stalledTicks += 1;
     if (stalledTicks >= 3) { stalledTicks = 0; lastFrames = -1; reconnect(); }
   }, 2000);
+
+  // Ao voltar para a aba, recomeça a contagem do vigia do zero.
+  document.addEventListener('visibilitychange', () => { stalledTicks = 0; lastFrames = -1; });
 
   function scheduleRetry() {
     closePeer();
