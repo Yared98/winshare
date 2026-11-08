@@ -52,6 +52,9 @@ impl Default for SupervisorBackoff {
     }
 }
 
+/// Variável que o supervisor passa ao filho: sem abrir o navegador na partida.
+pub const SUPERVISED_ENV: &str = "WINSHARE_SUPERVISED";
+
 /// Filtra argumentos da linha de comando, removendo `--supervised`.
 pub fn filter_child_args(args: impl IntoIterator<Item = String>) -> Vec<String> {
     args.into_iter()
@@ -84,6 +87,7 @@ pub fn run_supervisor(exe_path: &Path, child_args: &[String], config: &Config) -
         let start = Instant::now();
         let mut child = Command::new(exe_path)
             .args(child_args)
+            .env(SUPERVISED_ENV, "1")
             .spawn()
             .with_context(|| format!("falha ao iniciar processo filho {}", exe_path.display()))?;
 

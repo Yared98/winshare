@@ -168,7 +168,10 @@ async fn main() -> Result<()> {
             }
         };
 
-    tray::open_control_page(&control_url);
+    // Iniciado pelo supervisor (login do Windows ou reinício após falha): fica só na bandeja.
+    if std::env::var_os(screencast::supervisor::SUPERVISED_ENV).is_none() {
+        tray::open_control_page(&control_url);
+    }
 
     tokio::select! {
         result = tokio::signal::ctrl_c() => {
