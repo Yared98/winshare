@@ -68,8 +68,29 @@ impl IntoResponse for ApiError {
 async fn preview_socket(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
 ) -> Response {
+    // WebSocket não passa por CORS: sem esta checagem, qualquer site aberto neste
+    // computador poderia abrir o preview (que não pede senha).
+    if !local_origin(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     ws.on_upgrade(move |socket| signaling::handle_viewer(socket, state, ViewerKind::Preview))
+}
+
+/// Aceita só Origin `http(s)://` de host local. Sem Origin (cliente que não é navegador) também passa:
+/// o `require_local` já garantiu que a conexão vem deste computador.
+pub fn local_origin(headers: &axum::http::HeaderMap) -> bool {
+    let Some(origin) = headers.get(axum::http::header::ORIGIN) else {
+        return true;
+    };
+    let Ok(origin) = origin.to_str() else {
+        return false;
+    };
+    origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+        .is_some_and(|host| !host.contains('/') && crate::server::is_local_host(host))
 }
 
 async fn control_page() -> Html<&'static str> {
@@ -196,5 +217,29 @@ fn snapshot(state: &AppState) -> StatusBody {
             crate::config::TunnelMode::None => "none",
         },
         notices,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::local_origin;
+    use axum::http::{HeaderMap, HeaderValue, header::ORIGIN};
+
+    fn with_origin(value: &str) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        map.insert(ORIGIN, HeaderValue::from_str(value).unwrap());
+        map
+    }
+
+    #[test]
+    fn preview_origin_must_be_local() {
+        assert!(local_origin(&HeaderMap::new()));
+        assert!(local_origin(&with_origin("http://localhost:7878")));
+        assert!(local_origin(&with_origin("http://127.0.0.1:7878")));
+        assert!(local_origin(&with_origin("http://[::1]:7878")));
+        assert!(!local_origin(&with_origin("https://site-malicioso.com")));
+        assert!(!local_origin(&with_origin("http://localhost.evil.com")));
+        assert!(!local_origin(&with_origin("null")));
+        assert!(!local_origin(&with_origin("http://localhost:7878/x")));
     }
 }
