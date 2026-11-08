@@ -60,7 +60,7 @@ impl fmt::Debug for TurnCloudflareConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// Domínio público usado no link (ex.: winshare.yared.com.br).
+    /// Domínio público usado no link (ex.: winshare.exemplo.com.br).
     pub public_host: String,
     /// Porta pública (0.0.0.0): só /s/<token>, /viewer e o WebSocket do espectador.
     pub public_port: u16,
