@@ -1,0 +1,47 @@
+winshare - compartilhar janela ou monitor pelo navegador
+=========================================================
+
+O que tem nesta pasta
+- screencast.exe ......... o programa
+- libstdc++-6.dll, libgcc_s_seh-1.dll, libwinpthread-1.dll
+                           bibliotecas que o programa usa. Deixe na MESMA pasta do .exe.
+- config.toml ............ configuração (precisa ser preenchida, veja abaixo)
+- LEIA-ME.txt ............ este arquivo
+
+Requisitos
+- Windows 10 (versão 2004 ou mais nova) ou Windows 11.
+- Para assistirem pela internet: um domínio seu na Cloudflare com um Cloudflare Tunnel
+  apontando para este PC. Sem isso, funciona só na rede local.
+  Passo a passo: https://github.com/Yared98/winshare/blob/master/docs/cloudflare.md
+
+Configurar (uma vez)
+1. Abra o config.toml no Bloco de Notas.
+2. Só rede local: tunnel = "none" e public_host = o IP deste PC (ex.: 192.168.0.10).
+3. Pela internet, com o seu domínio na Cloudflare:
+   - crie o tunnel no painel da Cloudflare apontando para http://localhost:8080
+     (passo a passo no guia acima);
+   - public_host = o subdomínio que você criou, sem https:// (ex.: tela.seudominio.com.br);
+   - tunnel = "external".
+4. TURN (opcional, ajuda quem não consegue conectar): crie uma TURN key na sua conta
+   Cloudflare, descomente a seção [turn_cloudflare] no fim do arquivo e cole os valores.
+   Esses valores são secretos: não mande o config.toml para outras pessoas.
+5. Salve.
+
+Usar
+1. Dê dois cliques em screencast.exe.
+   Na primeira vez o Windows pode mostrar "O Windows protegeu o computador":
+   clique em "Mais informações" e depois em "Executar assim mesmo".
+2. O painel abre no navegador (http://127.0.0.1:7878/control). Ele só funciona neste PC.
+3. Escolha uma janela ou um monitor e clique em "Compartilhar".
+4. Copie o link (botão "Copiar") e mande para quem vai assistir.
+5. Para parar: botão "Parar" no painel. Para fechar o programa: ícone perto do relógio
+   do Windows (bandeja) > Sair.
+
+Dicas
+- Janela minimizada não transmite imagem. Prefira compartilhar o monitor inteiro se for
+  trocar de janela.
+- Compartilhando uma janela, só o som daquele programa vai junto. Compartilhando o
+  monitor, vai o som do computador inteiro.
+- O link muda toda vez que o programa é aberto.
+- Problemas? Os registros ficam na pasta "logs", ao lado do programa. Guia de problemas
+  comuns: https://github.com/Yared98/winshare/blob/master/docs/problemas.md

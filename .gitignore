@@ -2,3 +2,4 @@ target/
 config.toml
 config.toml
 .tasks/
+dist/

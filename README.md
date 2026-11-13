@@ -27,8 +27,12 @@ O programa roda no PC que transmite (Rust, Windows 10 2004+ ou 11), captura a im
 ## Requisitos
 
 - Windows 10 2004+ ou Windows 11.
-- [Rust](https://rustup.rs) estável (edition 2024), para compilar.
-- Opcional: um domínio na Cloudflare com Cloudflare Tunnel, para o link público por HTTPS.
+- Opcional: um domínio na Cloudflare com Cloudflare Tunnel, para o link público por HTTPS ([guia](docs/cloudflare.md)).
+
+Para compilar:
+
+- [Rust](https://rustup.rs) estável (edition 2024) com o toolchain **GNU**: `rustup default stable-x86_64-pc-windows-gnu`.
+- Um MinGW-w64 no `PATH` com `x86_64-w64-mingw32-gcc` e `g++` (o OpenH264 é C++). Testado com o [WinLibs](https://winlibs.com) UCRT (`winget install BrechtSanders.WinLibs.POSIX.UCRT`).
 
 ## Compilar e rodar
 
@@ -43,6 +47,16 @@ copy config.toml.example config.toml
 Ajuste o `config.toml` e rode `target\release\screencast.exe`. Na primeira execução, o painel abre no navegador. Para ver o console de depuração na versão release, use `screencast.exe --console`.
 
 No painel, escolha uma janela ou um monitor e clique em **Compartilhar**. Depois envie o link para quem vai assistir.
+
+## Levar para outro PC
+
+O executável depende de três DLLs do MinGW (`libstdc++-6.dll`, `libgcc_s_seh-1.dll`, `libwinpthread-1.dll`). Para montar uma pasta pronta, com o executável, as DLLs, um `config.toml` modelo e um LEIA-ME para quem não programa:
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts\empacotar.ps1
+```
+
+O resultado fica em `dist\winshare` e `dist\winshare.zip`. O `config.toml` do pacote é o modelo, sem os seus tokens. Quem for usar configura a própria exposição (domínio, tunnel e, se quiser, TURN) seguindo o [guia](docs/cloudflare.md).
 
 ## Configuração
 
@@ -73,25 +87,18 @@ Pelo menu da bandeja, marque **Iniciar com o Windows**. Isso grava a entrada `wi
 - **Codificação por software:** o H.264 usa OpenH264, sem aceleração de hardware.
 - **Sem SFU:** cada espectador recebe uma conexão direta do PC, então o upload cresce com o número de espectadores.
 
-## Estrutura
+## Documentação
 
-```
-src/
-  main.rs            CLI, servidores HTTP, bandeja, supervisor
-  config.rs          leitura e validação do config.toml
-  capture/           WGC (janela e monitor) e áudio (Process Loopback e loopback do sistema)
-  encode/            H.264 (OpenH264) e Opus
-  rtc/               conexões WebRTC, distribuição por espectador, controle de taxa
-  server/            rotas, sinalização WebSocket, API do painel
-  tray.rs            ícone na bandeja, instância única, iniciar com o Windows
-  supervisor.rs      reinício automático
-web/
-  control.html       painel local
-  viewer.html        página do espectador
-```
+- [docs/cloudflare.md](docs/cloudflare.md): tunnel, DNS, portas UDP, CGNAT, TURN e custo.
+- [docs/arquitetura.md](docs/arquitetura.md): como o vídeo vai da captura ao espectador, protocolo do WebSocket e decisões de projeto.
+- [docs/problemas.md](docs/problemas.md): "Reconectando", relay, sem áudio e outros problemas comuns.
 
 ## Testes
 
 ```bash
 cargo test
 ```
+
+## Licença
+
+[MIT](LICENSE).
