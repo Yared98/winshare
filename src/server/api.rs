@@ -170,19 +170,19 @@ async fn start(
     }
 
     let handle = tokio::runtime::Handle::current();
-    let bitrate = state.config.video_bitrate_bps();
+    let settings = state.config.video_settings();
     let (broadcaster, source, hwnd, monitor) = if request.test {
-        let broadcaster = Broadcaster::start_test_source(handle, bitrate)
+        let broadcaster = Broadcaster::start_test_source(handle, settings)
             .map_err(|err| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("{err:#}")))?;
         (broadcaster, "test", None, None)
     } else if let Some(hwnd) = request.hwnd {
-        let broadcaster = Broadcaster::start_window(handle, hwnd, bitrate).map_err(|err| {
+        let broadcaster = Broadcaster::start_window(handle, hwnd, settings).map_err(|err| {
             warn!(error = %format!("{err:#}"), "não consegui iniciar a captura");
             ApiError::new(StatusCode::BAD_REQUEST, format!("{err:#}"))
         })?;
         (broadcaster, "window", Some(hwnd), None)
     } else if let Some(mon) = request.monitor {
-        let broadcaster = Broadcaster::start_monitor(handle, mon, bitrate).map_err(|err| {
+        let broadcaster = Broadcaster::start_monitor(handle, mon, settings).map_err(|err| {
             warn!(error = %format!("{err:#}"), "não consegui iniciar a captura do monitor");
             ApiError::new(StatusCode::BAD_REQUEST, format!("{err:#}"))
         })?;

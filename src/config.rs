@@ -1,18 +1,49 @@
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use tracing::warn;
 
-static LAST_LOADED: Mutex<Option<Config>> = Mutex::new(None);
+/// Configurações de vídeo negociadas para a transmissão (taxa e intervalo de keyframes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoSettings {
+    pub max_kbps: u32,
+    pub min_kbps: u32,
+    pub keyframe_interval: Duration,
+}
 
-/// Retorna a última configuração carregada com sucesso por `Config::load`, se houver.
-pub fn last_loaded() -> Option<Config> {
-    LAST_LOADED.lock().ok().and_then(|g| g.clone())
+impl VideoSettings {
+    pub fn new(max_kbps: u32, min_kbps: u32, keyframe_interval: Duration) -> Self {
+        Self {
+            max_kbps,
+            min_kbps,
+            keyframe_interval,
+        }
+    }
+
+    /// Taxa máxima em bits por segundo.
+    pub fn max_bps(&self) -> u32 {
+        self.max_kbps * 1000
+    }
+
+    /// Taxa mínima em bits por segundo.
+    pub fn min_bps(&self) -> u32 {
+        self.min_kbps * 1000
+    }
+}
+
+impl From<u32> for VideoSettings {
+    fn from(bps: u32) -> Self {
+        let kbps = (bps / 1000).max(300);
+        Self {
+            max_kbps: kbps,
+            min_kbps: 800.min(kbps),
+            keyframe_interval: Duration::from_secs(5),
+        }
+    }
 }
 
 /// Modo do tunnel que expõe a porta pública à internet.
@@ -109,9 +140,13 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Retorna a última configuração carregada com sucesso via `Config::load`, se houver.
-    pub fn last_loaded() -> Option<Self> {
-        last_loaded()
+    /// Configurações negociadas de vídeo baseadas nos valores da configuração.
+    pub fn video_settings(&self) -> VideoSettings {
+        VideoSettings {
+            max_kbps: self.video_bitrate_kbps,
+            min_kbps: self.video_min_bitrate_kbps,
+            keyframe_interval: self.keyframe_interval(),
+        }
     }
 
     /// Lê o arquivo TOML. Se o arquivo não existir, usa os padrões e avisa.
@@ -126,9 +161,6 @@ impl Config {
             Config::default()
         };
         config.validate()?;
-        if let Ok(mut g) = LAST_LOADED.lock() {
-            *g = Some(config.clone());
-        }
         Ok(config)
     }
 
@@ -350,5 +382,16 @@ mod tests {
         let text = format!("{cf:?}");
         assert!(text.contains("abc123"));
         assert!(!text.contains("segredo-do-token"));
+    }
+
+    #[test]
+    fn video_settings_reflects_config() {
+        let c = Config::default();
+        let vs = c.video_settings();
+        assert_eq!(vs.max_kbps, c.video_bitrate_kbps);
+        assert_eq!(vs.min_kbps, c.video_min_bitrate_kbps);
+        assert_eq!(vs.keyframe_interval, Duration::from_secs(5));
+        assert_eq!(vs.max_bps(), 3_000_000);
+        assert_eq!(vs.min_bps(), 800_000);
     }
 }

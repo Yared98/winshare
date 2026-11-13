@@ -28,7 +28,7 @@ use ::rtc::rtp_transceiver::rtp_sender::RtpCodecKind;
 use ::rtc::sansio::Protocol;
 use ::rtc::shared::error::Error;
 
-use crate::rtc::broadcaster::{BroadcasterShared, audio_codec, get_broadcaster, video_codec};
+use crate::rtc::broadcaster::{BroadcasterShared, audio_codec, video_codec};
 use crate::turn::{IceServer, to_rtc};
 
 static NEXT_PEER_ID: AtomicU64 = AtomicU64::new(1);
@@ -200,6 +200,7 @@ impl Peer {
         ice_servers: &[IceServer],
         udp_port: u16,
         tracks: Vec<Arc<dyn TrackLocal>>,
+        broadcaster: Option<Arc<BroadcasterShared>>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<PeerEvent>)> {
         let mut media = MediaEngine::default();
         media
@@ -210,19 +211,6 @@ impl Peer {
             .context("codec Opus não registrado")?;
         let registry = register_default_interceptors(Registry::new(), &mut media)
             .context("interceptors RTP não registrados")?;
-
-        let mut broadcaster: Option<Arc<BroadcasterShared>> = None;
-        for track in &tracks {
-            let label = track.label().await;
-            if let Some(id_str) = label.strip_prefix("screencast-video-") {
-                if let Ok(id) = id_str.parse::<u64>() {
-                    if let Some(b) = get_broadcaster(id) {
-                        broadcaster = Some(b);
-                        break;
-                    }
-                }
-            }
-        }
 
         let peer_id = broadcaster.as_ref().map(|b| {
             let id = NEXT_PEER_ID.fetch_add(1, Ordering::Relaxed);
@@ -354,10 +342,10 @@ mod tests {
     #[tokio::test]
     async fn offer_contains_h264_and_opus() {
         let config = Config::default();
-        let broadcaster = Broadcaster::start_test_source(tokio::runtime::Handle::current(), 6_000_000)
+        let broadcaster = Broadcaster::start_test_source(tokio::runtime::Handle::current(), config.video_settings())
             .expect("fonte de teste");
         let ice = build_ice_servers(&config, None);
-        let (peer, _events) = Peer::new(&ice, 50_230, broadcaster.tracks())
+        let (peer, _events) = Peer::new(&ice, 50_230, broadcaster.tracks(), Some(broadcaster.shared()))
             .await
             .expect("peer");
         let sdp = peer.create_offer().await.expect("offer");

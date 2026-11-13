@@ -4,8 +4,11 @@
 
 pub mod api;
 pub mod signaling;
+pub mod viewer_stats;
+pub mod viewers;
 
-use std::collections::HashMap;
+pub use viewers::{ViewerRecord, ViewerRegistry};
+
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -20,7 +23,7 @@ use tokio::sync::watch;
 use webrtc::media_stream::track_local::TrackLocal;
 
 use crate::config::{Config, TunnelMode};
-use crate::rtc::broadcaster::Broadcaster;
+use crate::rtc::broadcaster::{Broadcaster, BroadcasterShared};
 use crate::rtc::peer::PortPool;
 use crate::turn::{IceServer, SharedIceServers};
 
@@ -54,12 +57,6 @@ pub enum ViewerKind {
     Preview,
 }
 
-pub struct ViewerRecord {
-    pub id: String,
-    pub connected_at: std::time::Instant,
-    pub stats: signaling::ViewerStats,
-}
-
 pub struct AppState {
     pub config: Config,
     pub token: String,
@@ -68,7 +65,7 @@ pub struct AppState {
     pub live: std::sync::Mutex<Option<LiveSession>>,
     pub viewers: AtomicUsize,
     pub ports: PortPool,
-    pub viewers_health: std::sync::Mutex<HashMap<String, ViewerRecord>>,
+    pub viewers_health: ViewerRegistry,
 }
 
 /// Vaga de espectador; libera ao ser descartada.
@@ -92,11 +89,11 @@ impl AppState {
             live: std::sync::Mutex::new(None),
             viewers: AtomicUsize::new(0),
             ports,
-            viewers_health: std::sync::Mutex::new(HashMap::new()),
+            viewers_health: ViewerRegistry::new(),
         }
     }
 
-    /// Reserva uma vaga (se público) e devolve as tracks, o canal de parada e a lista ICE atual da transmissão.
+    /// Reserva uma vaga (se público) e devolve as tracks, o canal de parada, a lista ICE e o estado compartilhado da transmissão.
     #[allow(clippy::type_complexity)]
     pub fn join_viewer(
         self: &Arc<Self>,
@@ -107,6 +104,7 @@ impl AppState {
             Vec<Arc<dyn TrackLocal>>,
             watch::Receiver<bool>,
             Vec<IceServer>,
+            Arc<BroadcasterShared>,
         ),
         &'static str,
     > {
@@ -138,11 +136,13 @@ impl AppState {
             .lock()
             .expect("ice poisoned")
             .clone();
+        let shared = session.broadcaster.shared();
         Ok((
             slot,
             session.broadcaster.tracks(),
             session.stop.subscribe(),
             ice,
+            shared,
         ))
     }
 
@@ -164,47 +164,19 @@ impl AppState {
     }
 
     pub fn register_viewer(&self, id: String) {
-        let mut map = self.viewers_health.lock().expect("viewers_health poisoned");
-        map.insert(
-            id.clone(),
-            ViewerRecord {
-                id,
-                connected_at: std::time::Instant::now(),
-                stats: signaling::ViewerStats::default(),
-            },
-        );
+        self.viewers_health.register(id);
     }
 
     pub fn update_viewer_stats(&self, id: &str, stats: signaling::ViewerStats) {
-        let mut map = self.viewers_health.lock().expect("viewers_health poisoned");
-        if let Some(record) = map.get_mut(id) {
-            record.stats = stats;
-        }
+        self.viewers_health.update(id, stats);
     }
 
     pub fn remove_viewer(&self, id: &str) {
-        let mut map = self.viewers_health.lock().expect("viewers_health poisoned");
-        map.remove(id);
+        self.viewers_health.remove(id);
     }
 
     pub fn viewer_list(&self) -> Vec<api::ViewerStatusItem> {
-        let map = self.viewers_health.lock().expect("viewers_health poisoned");
-        let mut list: Vec<api::ViewerStatusItem> = map
-            .values()
-            .map(|r| api::ViewerStatusItem {
-                id: r.id.clone(),
-                connected_secs: r.connected_at.elapsed().as_secs(),
-                path: r.stats.path.clone(),
-                rtt_ms: r.stats.rtt_ms,
-                loss_pct: r.stats.loss_pct,
-                fps: r.stats.fps,
-                kbps: r.stats.kbps,
-                reconnects: r.stats.reconnects,
-                last_reason: r.stats.last_reason.clone(),
-            })
-            .collect();
-        list.sort_by(|a, b| b.connected_secs.cmp(&a.connected_secs).then_with(|| a.id.cmp(&b.id)));
-        list
+        self.viewers_health.viewer_list()
     }
 
     pub fn request_keyframe(&self) {
@@ -453,7 +425,7 @@ mod tests {
         config.max_viewers = 2;
         let state = Arc::new(AppState::new(config, "a".repeat(32), vec![]));
         let broadcaster =
-            Broadcaster::start_test_source(tokio::runtime::Handle::current(), 100_000).unwrap();
+            Broadcaster::start_test_source(tokio::runtime::Handle::current(), state.config.video_settings()).unwrap();
         let (stop, _) = watch::channel(false);
         let ice_servers = Arc::new(std::sync::Mutex::new(vec![]));
         *state.live.lock().unwrap() = Some(LiveSession {
@@ -521,7 +493,7 @@ mod tests {
 
         // Agora com transmissão ao vivo
         let broadcaster =
-            Broadcaster::start_test_source(tokio::runtime::Handle::current(), 100_000).unwrap();
+            Broadcaster::start_test_source(tokio::runtime::Handle::current(), state.config.video_settings()).unwrap();
         let (stop, _) = watch::channel(false);
         let ice_servers = Arc::new(std::sync::Mutex::new(vec![]));
         *state.live.lock().unwrap() = Some(LiveSession {

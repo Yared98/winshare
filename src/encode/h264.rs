@@ -8,6 +8,8 @@ use openh264::OpenH264API;
 use openh264::encoder::{BitRate, Encoder, EncoderConfig, FrameRate, RateControlMode};
 use openh264::formats::YUVBuffer;
 
+use crate::config::VideoSettings;
+
 /// Ajusta largura e altura para pares (corta a última coluna/linha ímpar). Mínimo 2.
 pub fn even_size(width: u32, height: u32) -> (usize, usize) {
     (((width as usize) & !1).max(2), ((height as usize) & !1).max(2))
@@ -71,17 +73,15 @@ pub struct H264Encoder {
 }
 
 impl H264Encoder {
-    /// Cria um novo encoder com o intervalo de quadros-chave padrão da configuração (ou 5 s).
+    /// Cria um novo encoder H.264 com as configurações de vídeo fornecidas.
     pub fn new(
         width: usize,
         height: usize,
-        bitrate_bps: u32,
+        settings: impl Into<VideoSettings>,
         fps: f32,
     ) -> Result<Self> {
-        let keyframe_interval = crate::config::last_loaded()
-            .map(|c| Duration::from_secs(u64::from(c.keyframe_interval_secs)))
-            .unwrap_or(Duration::from_secs(5));
-        Self::with_keyframe_interval(width, height, bitrate_bps, fps, keyframe_interval)
+        let s = settings.into();
+        Self::with_keyframe_interval(width, height, s.max_bps(), fps, s.keyframe_interval)
     }
 
     /// `width` e `height` precisam ser pares. `bitrate_bps` é o alvo de taxa; `fps` é o teto de quadros;
@@ -204,7 +204,12 @@ mod tests {
 
     #[test]
     fn encodes_a_frame_to_annex_b() {
-        let mut enc = H264Encoder::new(64, 48, 1_000_000, 30.0).unwrap();
+        let settings = VideoSettings {
+            max_kbps: 1000,
+            min_kbps: 800,
+            keyframe_interval: Duration::from_secs(5),
+        };
+        let mut enc = H264Encoder::new(64, 48, settings, 30.0).unwrap();
         let bgra = solid(0, 128, 255, 64, 48);
         let nals = enc.encode_bgra(&bgra, 64 * 4).unwrap();
         assert!(nals.starts_with(&[0, 0, 0, 1]) || nals.starts_with(&[0, 0, 1]));
