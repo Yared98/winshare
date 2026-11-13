@@ -77,11 +77,10 @@ impl H264Encoder {
     pub fn new(
         width: usize,
         height: usize,
-        settings: impl Into<VideoSettings>,
+        settings: VideoSettings,
         fps: f32,
     ) -> Result<Self> {
-        let s = settings.into();
-        Self::with_keyframe_interval(width, height, s.max_bps(), fps, s.keyframe_interval)
+        Self::with_keyframe_interval(width, height, settings.max_bps(), fps, settings.keyframe_interval)
     }
 
     /// `width` e `height` precisam ser pares. `bitrate_bps` é o alvo de taxa; `fps` é o teto de quadros;

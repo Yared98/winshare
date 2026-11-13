@@ -7,7 +7,8 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use tracing::warn;
 
-/// Configurações de vídeo negociadas para a transmissão (taxa e intervalo de keyframes).
+/// Ajustes de vídeo da transmissão, vindos do config.toml: teto e piso da taxa adaptativa e
+/// intervalo entre quadros-chave forçados.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VideoSettings {
     pub max_kbps: u32,
@@ -16,33 +17,9 @@ pub struct VideoSettings {
 }
 
 impl VideoSettings {
-    pub fn new(max_kbps: u32, min_kbps: u32, keyframe_interval: Duration) -> Self {
-        Self {
-            max_kbps,
-            min_kbps,
-            keyframe_interval,
-        }
-    }
-
     /// Taxa máxima em bits por segundo.
     pub fn max_bps(&self) -> u32 {
         self.max_kbps * 1000
-    }
-
-    /// Taxa mínima em bits por segundo.
-    pub fn min_bps(&self) -> u32 {
-        self.min_kbps * 1000
-    }
-}
-
-impl From<u32> for VideoSettings {
-    fn from(bps: u32) -> Self {
-        let kbps = (bps / 1000).max(300);
-        Self {
-            max_kbps: kbps,
-            min_kbps: 800.min(kbps),
-            keyframe_interval: Duration::from_secs(5),
-        }
     }
 }
 
@@ -392,6 +369,5 @@ mod tests {
         assert_eq!(vs.min_kbps, c.video_min_bitrate_kbps);
         assert_eq!(vs.keyframe_interval, Duration::from_secs(5));
         assert_eq!(vs.max_bps(), 3_000_000);
-        assert_eq!(vs.min_bps(), 800_000);
     }
 }

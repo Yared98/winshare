@@ -64,7 +64,7 @@ fn main() -> Result<()> {
             size = (frame.width, frame.height);
             let (w, h) = even_size(frame.width, frame.height);
             if encoder.as_ref().map(H264Encoder::dimensions) != Some((w, h)) {
-                encoder = Some(H264Encoder::new(w, h, 6_000_000, 30.0)?);
+                encoder = Some(H264Encoder::with_keyframe_interval(w, h, 6_000_000, 30.0, std::time::Duration::from_secs(5))?);
             }
             if do_encode {
                 let t = Instant::now();
