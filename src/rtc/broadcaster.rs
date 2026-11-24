@@ -115,30 +115,31 @@ impl BroadcasterShared {
     }
 }
 
-/// Fonte ativa da transmissão: sinal de parada, status e handles das threads.
+/// Fonte ativa da transmissão: sinal de parada, status e a thread de vídeo.
 struct ActiveSource {
     name: String,
     stop: Arc<AtomicBool>,
     status: Arc<SourceStatus>,
     video_thread: Option<thread::JoinHandle<()>>,
-    audio_thread: Option<thread::JoinHandle<()>>,
 }
 
 impl ActiveSource {
-    fn stop_and_join(&mut self) {
+    /// Para a fonte e espera só a thread de vídeo: um quadro antigo depois do primeiro quadro
+    /// da fonte nova quebraria o decodificador (SPS diferente). A thread de áudio só recebe o
+    /// sinal: ela pode estar esperando a ativação do loopback do sistema (até 30 s) e alguns
+    /// pacotes de áudio a mais não atrapalham.
+    fn stop_and_join_video(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(thread) = self.video_thread.take() {
-            let _ = thread.join();
-        }
-        if let Some(thread) = self.audio_thread.take() {
             let _ = thread.join();
         }
     }
 }
 
 impl Drop for ActiveSource {
+    /// Só sinaliza: o `Broadcaster` é descartado dentro de handlers assíncronos.
     fn drop(&mut self) {
-        self.stop_and_join();
+        self.stop.store(true, Ordering::SeqCst);
     }
 }
 
@@ -299,24 +300,20 @@ impl Broadcaster {
         let audio_status = status.clone();
         let handle = self.handle.clone();
         let audio_ssrc = self.audio_ssrc;
-        let audio_thread = match thread::Builder::new()
+        if let Err(err) = thread::Builder::new()
             .name("audio-source".to_owned())
             .spawn(move || run_audio(handle, track, audio_ssrc, audio_input, audio_stop, audio_status))
         {
-            Ok(thread) => thread,
-            Err(err) => {
-                stop.store(true, Ordering::SeqCst);
-                let _ = video_thread.join();
-                return Err(err).context("não consegui iniciar a thread de áudio");
-            }
-        };
+            stop.store(true, Ordering::SeqCst);
+            let _ = video_thread.join();
+            return Err(err).context("não consegui iniciar a thread de áudio");
+        }
 
         Ok(ActiveSource {
             name,
             stop,
             status,
             video_thread: Some(video_thread),
-            audio_thread: Some(audio_thread),
         })
     }
 
@@ -331,7 +328,7 @@ impl Broadcaster {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let old_name = if let Some(mut old_source) = guard.take() {
-            old_source.stop_and_join();
+            old_source.stop_and_join_video();
             old_source.name.clone()
         } else {
             "nenhuma".to_owned()
