@@ -5,134 +5,120 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Controle de Transmissão</title>
 <style>
+  /* Estilo de terminal (TUI): monoespaçada, painéis de linha, botões entre colchetes. */
   :root {
-    --bg: #0f1115;
-    --fg: #e8eaf0;
-    --muted: #9aa3b2;
-    --card: #171a21;
-    --card-border: rgba(255, 255, 255, 0.08);
-    --accent: #4f8cff;
-    --accent-hover: #3b74db;
-    --danger: #e5484d;
-    --danger-hover: #c93b40;
-    --success: #30a46c;
-    --live-badge: #e5484d;
-    --input-bg: #101217;
-    --input-border: #2a2e39;
-    --item-hover: rgba(255, 255, 255, 0.04);
-    --active-item: rgba(79, 140, 255, 0.12);
-    --active-border: #4f8cff;
-  }
-  @media (prefers-color-scheme: light) {
-    :root:not([data-theme="dark"]) {
-      --bg: #f5f6fa;
-      --fg: #1b1f29;
-      --muted: #5b6475;
-      --card: #ffffff;
-      --card-border: rgba(0, 0, 0, 0.08);
-      --accent: #2563eb;
-      --accent-hover: #1d4ed8;
-      --danger: #d93636;
-      --danger-hover: #b91c1c;
-      --success: #16a34a;
-      --live-badge: #dc2626;
-      --input-bg: #f9fafb;
-      --input-border: #d1d5db;
-      --item-hover: rgba(0, 0, 0, 0.02);
-      --active-item: rgba(37, 99, 235, 0.08);
-      --active-border: #2563eb;
-    }
-  }
-  :root[data-theme="light"] {
-    --bg: #f5f6fa;
-    --fg: #1b1f29;
-    --muted: #5b6475;
-    --card: #ffffff;
-    --card-border: rgba(0, 0, 0, 0.08);
-    --accent: #2563eb;
-    --accent-hover: #1d4ed8;
-    --danger: #d93636;
-    --danger-hover: #b91c1c;
-    --success: #16a34a;
-    --live-badge: #dc2626;
-    --input-bg: #f9fafb;
-    --input-border: #d1d5db;
-    --item-hover: rgba(0, 0, 0, 0.02);
-    --active-item: rgba(37, 99, 235, 0.08);
-    --active-border: #2563eb;
+    color-scheme: dark;
+    --bg: #070908;
+    --panel: #0f1311;
+    --fg: #e4ebe3;
+    --muted: #a2afa5;
+    --dim: #6f7c72;
+    --line: #4a574e;
+    --accent: #7ee787;
+    --danger: #ff6b6b;
+    --warn: #e3b341;
+    --hover: rgba(126, 231, 135, 0.08);
+    --mono: "Cascadia Mono", "Cascadia Code", Consolas, "DejaVu Sans Mono", ui-monospace, monospace;
   }
 
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+
   body {
     margin: 0;
     background: var(--bg);
     color: var(--fg);
-    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: var(--mono);
+    font-size: 14px;
+    line-height: 1.45;
     padding: 16px;
     overflow-x: hidden;
   }
 
+  @keyframes blink { 50% { opacity: 0; } }
+
   header {
     max-width: 1400px;
-    margin: 0 auto 16px;
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    flex-wrap: wrap;
-    gap: 8px;
+    margin: 0 auto 26px;
   }
   header h1 {
-    font-size: 20px;
+    font-size: 16px;
     margin: 0;
-    font-weight: 600;
+    font-weight: 700;
+  }
+  header h1::before {
+    content: "winshare:~$ ";
+    color: var(--accent);
+    font-weight: 400;
+  }
+  header h1::after {
+    content: "█";
+    margin-left: 0.5ch;
+    color: var(--accent);
+    animation: blink 1s steps(1) infinite;
   }
   header p {
-    margin: 0;
+    margin: 2px 0 0;
     color: var(--muted);
     font-size: 13px;
   }
+  header p::before { content: "# "; }
 
-  [hidden] { display: none !important; }
   .container {
     max-width: 1400px;
     margin: 0 auto;
     display: grid;
     grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
-    gap: 20px;
+    gap: 26px 20px;
     align-items: start;
   }
   @media (max-width: 960px) {
-    .container {
-      grid-template-columns: 1fr;
-    }
+    .container { grid-template-columns: 1fr; }
   }
 
   .panel {
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 26px;
+    min-width: 0;
   }
 
+  /* Painel: borda de linha com o título encaixado na borda de cima. */
   section {
-    background: var(--card);
-    border: 1px solid var(--card-border);
-    border-radius: 10px;
-    padding: 16px;
+    position: relative;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    padding: 18px 14px 14px;
+    min-width: 0;
   }
-
   h2 {
-    font-size: 16px;
-    margin: 0 0 12px;
-    font-weight: 600;
+    position: absolute;
+    top: -0.75em;
+    left: 1ch;
+    max-width: calc(100% - 2ch);
+    margin: 0;
+    padding: 0 1ch;
+    background: linear-gradient(to bottom, var(--bg) 50%, var(--panel) 50%);
+    color: var(--accent);
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1.5;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
+  h2::before { content: "─ "; color: var(--line); }
+  h2::after { content: " ─"; color: var(--line); }
 
-  /* Preview */
+  /* Prévia */
   .stage-box {
     position: relative;
     width: 100%;
     aspect-ratio: 16 / 9;
     background: #000;
-    border-radius: 8px;
+    border: 1px solid var(--line);
     overflow: hidden;
   }
   video {
@@ -156,56 +142,49 @@
     padding: 16px;
   }
   .stage-placeholder span {
-    font-size: 18px;
-    color: #fff;
-    font-weight: 500;
+    font-size: 15px;
+    color: var(--fg);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
+  .stage-placeholder span::before { content: "[ "; color: var(--line); }
+  .stage-placeholder span::after { content: " ]"; color: var(--line); }
   .stage-placeholder p {
     margin: 0;
-    font-size: 14px;
-    max-width: 320px;
+    font-size: 13px;
+    max-width: 44ch;
   }
   .stage-overlay-top {
     position: absolute;
-    top: 12px;
-    left: 12px;
-    right: 12px;
+    top: 8px;
+    left: 8px;
+    right: 8px;
     display: flex;
     justify-content: space-between;
     align-items: center;
     pointer-events: none;
   }
-  .stage-overlay-top > * {
-    pointer-events: auto;
-  }
+  .stage-overlay-top > * { pointer-events: auto; }
   .live-badge-group {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
-    background: rgba(0, 0, 0, 0.7);
-    padding: 4px 10px;
-    border-radius: 6px;
+    gap: 1ch;
+    background: rgba(0, 0, 0, 0.8);
+    padding: 2px 1ch;
     font-size: 13px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
-    backdrop-filter: blur(4px);
   }
-  .live-dot {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--live-badge);
-    box-shadow: 0 0 8px var(--live-badge);
+  .live-dot::before {
+    content: "●";
+    color: var(--danger);
+    animation: blink 1.2s steps(1) infinite;
   }
   .live-tag {
     color: #fff;
     font-weight: 700;
   }
   .live-uptime {
-    color: #e2e8f0;
+    color: var(--fg);
     font-variant-numeric: tabular-nums;
-    font-weight: 500;
   }
 
   .preview-stats-bar {
@@ -213,130 +192,108 @@
     justify-content: space-between;
     align-items: center;
     flex-wrap: wrap;
-    gap: 8px;
-    padding: 10px 4px 2px;
+    gap: 4px 2ch;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--line);
     font-size: 13px;
     color: var(--muted);
     font-variant-numeric: tabular-nums;
   }
 
-  /* Form controls & Buttons */
+  /* Botões: [ rótulo ], com vídeo invertido no foco e ao passar o mouse. */
   button, input {
     font: inherit;
-    border-radius: 6px;
-    border: 1px solid var(--accent);
-    cursor: pointer;
+    border-radius: 0;
   }
   button {
-    padding: 8px 14px;
-    background: var(--accent);
-    color: #fff;
-    font-weight: 500;
-    transition: background 0.15s, border-color 0.15s, opacity 0.15s;
-  }
-  button:hover:not(:disabled) {
-    background: var(--accent-hover);
-    border-color: var(--accent-hover);
-  }
-  button.secondary {
+    --btn: var(--accent);
+    padding: 1px 0.5ch;
+    border: 0;
     background: transparent;
-    color: var(--accent);
-    border-color: var(--accent);
+    color: var(--btn);
+    cursor: pointer;
+    white-space: nowrap;
   }
-  button.secondary:hover:not(:disabled) {
-    background: rgba(79, 140, 255, 0.1);
+  button::before { content: "[ "; }
+  button::after { content: " ]"; }
+  button.danger { --btn: var(--danger); }
+  button:hover:not(:disabled),
+  button:focus-visible:not(:disabled) {
+    background: var(--btn);
+    color: var(--bg);
+    outline: none;
   }
-  button.danger {
-    background: var(--danger);
-    border-color: var(--danger);
-    color: #fff;
-  }
-  button.danger:hover:not(:disabled) {
-    background: var(--danger-hover);
-    border-color: var(--danger-hover);
-  }
-  button.stage-btn {
-    background: rgba(0, 0, 0, 0.7);
-    color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    padding: 5px 10px;
-    font-size: 13px;
-    backdrop-filter: blur(4px);
-  }
-  button.stage-btn:hover:not(:disabled) {
-    background: rgba(0, 0, 0, 0.9);
-    border-color: #fff;
+  button:focus-visible:disabled {
+    outline: 1px dashed var(--muted);
   }
   button:disabled {
-    opacity: 0.5;
+    color: var(--dim);
     cursor: not-allowed;
+  }
+  button.stage-btn {
+    background: rgba(0, 0, 0, 0.8);
+    font-size: 13px;
+  }
+  button.stage-btn:hover:not(:disabled),
+  button.stage-btn:focus-visible:not(:disabled) {
+    background: var(--btn);
   }
 
   input[type="text"], input[type="search"] {
-    background: var(--input-bg);
+    background: var(--bg);
     color: var(--fg);
-    border: 1px solid var(--input-border);
-    padding: 8px 12px;
-    cursor: text;
+    border: 1px solid var(--line);
+    padding: 5px 1ch;
     width: 100%;
+    min-width: 0;
   }
-  input[type="search"]::-webkit-search-cancel-button {
-    cursor: pointer;
+  input::placeholder { color: var(--muted); opacity: 1; }
+  input:focus-visible {
+    border-color: var(--accent);
+    outline: none;
   }
+  input[type="search"]::-webkit-search-cancel-button { cursor: pointer; }
 
+  /* Estado */
   .status-grid {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
-    gap: 8px 14px;
+    gap: 6px 2ch;
     align-items: baseline;
-    font-size: 14px;
     margin-bottom: 12px;
   }
-  .status-label {
-    color: var(--muted);
-  }
-  .status-val {
-    word-break: break-all;
-    font-weight: 500;
-  }
+  .status-label { color: var(--muted); }
+  .meter-on { color: var(--accent); }
+  .meter-off { color: var(--dim); }
+  .status-val { word-break: break-all; }
+  #viewers-count { word-break: normal; overflow-wrap: anywhere; }
 
   .badge-state {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 12px;
-    font-weight: 600;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
-  .badge-idle {
-    background: rgba(127, 127, 127, 0.2);
-    color: var(--muted);
-  }
-  .badge-live {
-    background: rgba(229, 72, 77, 0.2);
-    color: var(--danger);
-  }
-  .badge-ended {
-    background: rgba(234, 179, 8, 0.2);
-    color: #eab308;
-  }
+  .badge-idle { color: var(--fg); }
+  .badge-idle::before { content: "○ "; }
+  .badge-live { color: var(--danger); }
+  .badge-live::before { content: "● "; animation: blink 1.2s steps(1) infinite; }
+  .badge-ended { color: var(--warn); }
+  .badge-ended::before { content: "■ "; }
 
   .link-box {
     min-width: 0;
     display: flex;
-    gap: 8px;
+    gap: 1ch;
     align-items: center;
-    background: var(--input-bg);
-    border: 1px solid var(--input-border);
-    border-radius: 6px;
-    padding: 6px 10px;
-    margin-top: 8px;
+    border: 1px solid var(--line);
+    padding: 4px 1ch;
   }
+  .link-box::before { content: ">"; color: var(--accent); }
   .link-text {
     flex: 1;
     min-width: 0;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     font-size: 13px;
-    color: var(--fg);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -345,7 +302,7 @@
 
   .actions-row {
     display: flex;
-    gap: 8px;
+    gap: 4px 2ch;
     align-items: center;
     flex-wrap: wrap;
     margin-top: 14px;
@@ -353,78 +310,112 @@
 
   .notice-box {
     margin-top: 12px;
-    padding: 10px 12px;
-    border-radius: 6px;
-    background: rgba(229, 72, 77, 0.12);
-    border: 1px solid rgba(229, 72, 77, 0.3);
+    padding: 6px 1ch;
+    border: 1px solid var(--danger);
     color: var(--danger);
     font-size: 13px;
-    line-height: 1.4;
   }
-  .notice-box[hidden] {
-    display: none;
-  }
+  .notice-box::before { content: "! "; font-weight: 700; }
 
-  /* Janelas */
+  /* Espectadores */
+  .table-scroll {
+    overflow-x: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--line) transparent;
+  }
+  .viewers-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    text-align: left;
+    font-variant-numeric: tabular-nums;
+  }
+  .viewers-table th,
+  .viewers-table td {
+    padding: 4px 1ch;
+    white-space: nowrap;
+  }
+  .viewers-table th {
+    color: var(--muted);
+    font-weight: 400;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--line);
+  }
+  .viewers-table td { border-bottom: 1px dashed var(--line); }
+  .viewers-table tbody tr:last-child td { border-bottom: 0; }
+  .viewers-table tbody tr:hover td { background: var(--hover); }
+  .viewers-table td.viewer-id { color: var(--accent); }
+  .viewers-table td.loss-bad { color: var(--danger); font-weight: 700; }
+  .viewers-table .empty-row td {
+    padding: 12px 1ch;
+    text-align: center;
+    color: var(--muted);
+  }
+  .viewers-table .empty-row:hover td { background: none; }
+
+  /* Monitores e janelas */
   .windows-header {
     display: flex;
-    gap: 8px;
+    gap: 1ch;
     align-items: center;
-    margin-bottom: 12px;
+    margin-bottom: 10px;
   }
-  .windows-header input {
-    flex: 1;
-  }
+  .windows-header input { flex: 1; }
   ul.windows-list {
     list-style: none;
     padding: 0;
     margin: 0;
     max-height: 380px;
     overflow-y: auto;
-    border: 1px solid var(--input-border);
-    border-radius: 6px;
+    border: 1px solid var(--line);
+    scrollbar-width: thin;
+    scrollbar-color: var(--line) transparent;
   }
   li.window-item {
     display: flex;
-    justify-content: space-between;
-    gap: 12px;
+    gap: 1ch;
     align-items: center;
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--card-border);
-    transition: background 0.1s;
+    padding: 4px 1ch;
+    border-bottom: 1px dashed var(--line);
   }
-  li.window-item:last-child {
-    border-bottom: none;
+  li.window-item::before {
+    content: " ";
+    white-space: pre;
+    color: var(--accent);
+    font-weight: 700;
   }
-  li.window-item:hover {
-    background: var(--item-hover);
-  }
-  li.window-item.active {
-    background: var(--active-item);
-    border-left: 3px solid var(--active-border);
-  }
+  li.window-item:last-child { border-bottom: 0; }
+  li.window-item:hover { background: var(--hover); }
+  li.window-item.active::before { content: ">"; }
+  li.window-item.active .window-title { color: var(--accent); }
   .window-meta {
-    overflow: hidden;
+    flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 2px;
   }
   .window-title {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 14px;
-    font-weight: 500;
   }
   .window-pid {
     font-size: 12px;
     color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .muted-note {
     font-size: 12px;
     color: var(--muted);
     margin: 8px 0 0;
-    line-height: 1.4;
+  }
+  .muted-note::before { content: "# "; }
+
+  @media (prefers-reduced-motion: reduce) {
+    header h1::after, .live-dot::before, .badge-live::before { animation: none; }
   }
 </style>
 </head>
@@ -466,26 +457,24 @@
 
     <section>
       <h2>Espectadores</h2>
-      <div style="overflow-x: auto;">
-        <table style="width: 100%; border-collapse: collapse; font-size: 13px; text-align: left;">
+      <div class="table-scroll">
+        <table class="viewers-table">
           <thead>
-            <tr style="border-bottom: 1px solid var(--card-border); color: var(--muted);">
-              <th style="padding: 8px 6px;">ID</th>
-              <th style="padding: 8px 6px;">Tempo conectado</th>
-              <th style="padding: 8px 6px;">Caminho</th>
-              <th style="padding: 8px 6px;">RTT</th>
-              <th style="padding: 8px 6px;">Perda</th>
-              <th style="padding: 8px 6px;">FPS</th>
-              <th style="padding: 8px 6px;">Taxa</th>
-              <th style="padding: 8px 6px;">Reconexões</th>
-              <th style="padding: 8px 6px;">Último motivo</th>
+            <tr>
+              <th>ID</th>
+              <th>Tempo conectado</th>
+              <th>Caminho</th>
+              <th>RTT</th>
+              <th>Perda</th>
+              <th>FPS</th>
+              <th>Taxa</th>
+              <th>Reconexões</th>
+              <th>Último motivo</th>
             </tr>
           </thead>
           <tbody id="viewers-tbody">
-            <tr>
-              <td colspan="9" style="padding: 14px 6px; text-align: center; color: var(--muted);">
-                Nenhum espectador conectado.
-              </td>
+            <tr class="empty-row">
+              <td colspan="9">Nenhum espectador conectado.</td>
             </tr>
           </tbody>
         </table>
@@ -502,7 +491,7 @@
         <span class="status-val"><span id="state-badge" class="badge-state badge-idle">Parada</span></span>
 
         <span class="status-label">Espectadores:</span>
-        <span class="status-val" id="viewers-count">0 de 10 espectadores</span>
+        <span class="status-val" id="viewers-count">[<span class="meter-off">··········</span>] 0 de 10 espectadores</span>
 
         <span class="status-label">Qualidade:</span>
         <span class="status-val" id="stream-health">—</span>
@@ -514,7 +503,7 @@
         <div class="status-val">
           <div id="link-container" class="link-box">
             <span id="link-text" class="link-text">—</span>
-            <button id="btn-copy" type="button" class="secondary" style="padding:4px 8px;font-size:12px">Copiar</button>
+            <button id="btn-copy" type="button" class="secondary">Copiar</button>
           </div>
         </div>
       </div>
@@ -676,6 +665,13 @@
     return 'Janela';
   }
 
+  // Medidor de blocos no estilo de terminal: [███░░░░░░░]
+  function meter(value, max, cells = 10) {
+    const ratio = max > 0 ? Number(value) / Number(max) : 0;
+    const filled = Math.max(0, Math.min(cells, Math.round((ratio || 0) * cells)));
+    return `[<span class="meter-on">${'█'.repeat(filled)}</span><span class="meter-off">${'·'.repeat(cells - filled)}</span>]`;
+  }
+
   function renderStatus(status) {
     currentStatus = status;
     const isLive = status.state === 'live';
@@ -693,7 +689,7 @@
     }
 
     // Espectadores
-    viewersCount.textContent = `${status.viewers} de ${status.max_viewers} espectadores`;
+    viewersCount.innerHTML = `${meter(status.viewers, status.max_viewers)} ${status.viewers} de ${status.max_viewers} espectadores`;
     const health = $('stream-health');
     if (status.stream) {
       const loss = status.stream.worst_loss_pct;
@@ -710,7 +706,7 @@
     // Link
     if (isLive && status.link) {
       linkText.textContent = status.link;
-      btnCopy.style.display = 'inline-block';
+      btnCopy.style.display = '';
     } else {
       linkText.textContent = 'Transmissão inativa';
       btnCopy.style.display = 'none';
@@ -755,16 +751,15 @@
     if (!viewersTbody) return;
     const viewers = Array.isArray(list) ? list : [];
     if (viewers.length === 0) {
-      viewersTbody.innerHTML = '<tr><td colspan="9" style="padding: 14px 6px; text-align: center; color: var(--muted);">Nenhum espectador conectado.</td></tr>';
+      viewersTbody.innerHTML = '<tr class="empty-row"><td colspan="9">Nenhum espectador conectado.</td></tr>';
       return;
     }
     viewersTbody.innerHTML = '';
     for (const v of viewers) {
       const tr = document.createElement('tr');
-      tr.style.borderBottom = '1px solid var(--card-border)';
 
       const lossVal = Number(v.loss_pct) || 0;
-      const lossColor = lossVal > 5 ? 'color: var(--danger); font-weight: 600;' : '';
+      const lossClass = lossVal > 5 ? ' class="loss-bad"' : '';
 
       const pathText = v.path === 'relay' ? 'Relay' : 'Direto';
       const rttText = typeof v.rtt_ms === 'number' ? `${v.rtt_ms} ms` : '—';
@@ -776,15 +771,15 @@
       const connectedText = formatTime(v.connected_secs || 0);
 
       tr.innerHTML = `
-        <td style="padding: 8px 6px; font-family: monospace; font-weight: 500;">${v.id}</td>
-        <td style="padding: 8px 6px;">${connectedText}</td>
-        <td style="padding: 8px 6px;">${pathText}</td>
-        <td style="padding: 8px 6px;">${rttText}</td>
-        <td style="padding: 8px 6px; ${lossColor}">${lossText}</td>
-        <td style="padding: 8px 6px;">${fpsText}</td>
-        <td style="padding: 8px 6px;">${kbpsText}</td>
-        <td style="padding: 8px 6px;">${reconnectsText}</td>
-        <td style="padding: 8px 6px;">${lastReasonText}</td>
+        <td class="viewer-id">${v.id}</td>
+        <td>${connectedText}</td>
+        <td>${pathText}</td>
+        <td>${rttText}</td>
+        <td${lossClass}>${lossText}</td>
+        <td>${fpsText}</td>
+        <td>${kbpsText}</td>
+        <td>${reconnectsText}</td>
+        <td>${lastReasonText}</td>
       `;
       viewersTbody.appendChild(tr);
     }
