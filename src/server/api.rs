@@ -26,6 +26,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/windows", get(windows))
         .route("/api/monitors", get(monitors))
         .route("/api/start", post(start))
+        .route("/api/switch", post(switch))
         .route("/api/stop", post(stop))
         .route("/api/status", get(status))
         .route("/api/preview", get(preview_socket))
@@ -198,7 +199,7 @@ async fn start(
     let ice_servers = Arc::new(Mutex::new(ice));
     turn::spawn_refresh(state.config.clone(), ice_servers.clone(), stop.subscribe());
     *live = Some(LiveSession {
-        broadcaster,
+        broadcaster: Arc::new(broadcaster),
         source,
         hwnd,
         monitor,
@@ -208,6 +209,76 @@ async fn start(
     });
     info!(source, "transmissão iniciada");
     drop(live);
+    Ok(Json(snapshot(&state)))
+}
+
+async fn switch(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<StartRequest>,
+) -> Result<Json<StatusBody>, ApiError> {
+    enum SwitchTarget {
+        Test,
+        Window(u64),
+        Monitor(u64),
+    }
+
+    let target = if request.test {
+        SwitchTarget::Test
+    } else if let Some(hwnd) = request.hwnd {
+        SwitchTarget::Window(hwnd)
+    } else if let Some(mon) = request.monitor {
+        SwitchTarget::Monitor(mon)
+    } else {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "escolha um monitor (monitor), uma janela (hwnd) ou use \"test\": true",
+        ));
+    };
+
+    let broadcaster = {
+        let live = state.live.lock().expect("live poisoned");
+        let Some(session) = live.as_ref() else {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "nenhuma transmissão ativa",
+            ));
+        };
+        if session.broadcaster.ended() {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "nenhuma transmissão ativa",
+            ));
+        }
+        session.broadcaster.clone()
+    };
+
+    let result = tokio::task::spawn_blocking(move || match target {
+        SwitchTarget::Test => broadcaster.switch_to_test().map(|()| ("test", None, None)),
+        SwitchTarget::Window(hwnd) => {
+            broadcaster.switch_to_window(hwnd).map(|()| ("window", Some(hwnd), None))
+        }
+        SwitchTarget::Monitor(mon) => {
+            broadcaster.switch_to_monitor(mon).map(|()| ("monitor", None, Some(mon)))
+        }
+    })
+    .await
+    .map_err(|err| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+
+    let (new_source, new_hwnd, new_monitor) = result.map_err(|err| {
+        warn!(error = %format!("{err:#}"), "erro ao trocar de fonte");
+        ApiError::new(StatusCode::BAD_REQUEST, format!("{err:#}"))
+    })?;
+
+    {
+        let mut live = state.live.lock().expect("live poisoned");
+        if let Some(session) = live.as_mut() {
+            session.source = new_source;
+            session.hwnd = new_hwnd;
+            session.monitor = new_monitor;
+        }
+    }
+
+    info!(source = new_source, "fonte da transmissão alterada");
     Ok(Json(snapshot(&state)))
 }
 

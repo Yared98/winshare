@@ -40,7 +40,7 @@ pub fn generate_token() -> String {
 
 /// Transmissão em andamento.
 pub struct LiveSession {
-    pub broadcaster: Broadcaster,
+    pub broadcaster: Arc<Broadcaster>,
     pub source: &'static str,
     pub hwnd: Option<u64>,
     pub monitor: Option<u64>,
@@ -401,7 +401,7 @@ mod tests {
     #[tokio::test]
     async fn public_port_has_no_control_routes() {
         let app = public_router(state());
-        for uri in ["/control", "/api/status", "/api/start", "/api/windows", "/api/preview"] {
+        for uri in ["/control", "/api/status", "/api/start", "/api/switch", "/api/windows", "/api/preview"] {
             let request = with_peer(
                 HttpRequest::builder()
                     .uri(uri)
@@ -429,7 +429,7 @@ mod tests {
         let (stop, _) = watch::channel(false);
         let ice_servers = Arc::new(std::sync::Mutex::new(vec![]));
         *state.live.lock().unwrap() = Some(LiveSession {
-            broadcaster,
+            broadcaster: Arc::new(broadcaster),
             source: "test",
             hwnd: None,
             monitor: None,
@@ -497,7 +497,7 @@ mod tests {
         let (stop, _) = watch::channel(false);
         let ice_servers = Arc::new(std::sync::Mutex::new(vec![]));
         *state.live.lock().unwrap() = Some(LiveSession {
-            broadcaster,
+            broadcaster: Arc::new(broadcaster),
             source: "window",
             hwnd: Some(12345),
             monitor: None,
@@ -665,5 +665,81 @@ mod tests {
         assert_eq!(state.viewer_list().len(), 1);
 
         state.remove_viewer("x9y8z7");
+    }
+
+    #[tokio::test]
+    async fn api_switch_endpoints() {
+        let state = state();
+        let app = control_router(state.clone());
+
+        // 1. Sem transmissão ativa -> 409
+        let req = with_peer(
+            HttpRequest::builder()
+                .uri("/api/switch")
+                .method("POST")
+                .header(HOST, "127.0.0.1:7878")
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"test": true}"#))
+                .unwrap(),
+            SocketAddr::from(([127, 0, 0, 1], 5000)),
+        );
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::CONFLICT);
+
+        // 2. Com transmissão de teste ativa
+        let broadcaster = Arc::new(
+            Broadcaster::start_test_source(
+                tokio::runtime::Handle::current(),
+                state.config.video_settings(),
+            )
+            .unwrap(),
+        );
+        let (stop, _) = watch::channel(false);
+        let ice_servers = Arc::new(std::sync::Mutex::new(vec![]));
+        let started_at = std::time::Instant::now() - std::time::Duration::from_secs(10);
+        *state.live.lock().unwrap() = Some(LiveSession {
+            broadcaster,
+            source: "test",
+            hwnd: None,
+            monitor: None,
+            started_at,
+            stop,
+            ice_servers,
+        });
+
+        // Adiciona um espectador público para testar preservação de viewers
+        let _slot = state.join_viewer(ViewerKind::Public).expect("join viewer");
+        assert_eq!(state.viewers.load(Ordering::SeqCst), 1);
+
+        // Chama /api/switch com {test: true}
+        let req = with_peer(
+            HttpRequest::builder()
+                .uri("/api/switch")
+                .method("POST")
+                .header(HOST, "127.0.0.1:7878")
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"test": true}"#))
+                .unwrap(),
+            SocketAddr::from(([127, 0, 0, 1], 5000)),
+        );
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["state"], "live");
+        assert_eq!(json["source"], "test");
+        assert_eq!(json["viewers"], 1);
+        let uptime = json["uptime_secs"].as_u64().expect("uptime presente");
+        assert!(uptime >= 10, "uptime deve preservar started_at (>= 10s)");
+
+        // Confere que no LiveSession o started_at foi mantido
+        let live = state.live.lock().unwrap();
+        let session = live.as_ref().unwrap();
+        assert_eq!(session.started_at, started_at);
+        assert_eq!(session.source, "test");
+        drop(live);
+
+        state.stop_live();
     }
 }

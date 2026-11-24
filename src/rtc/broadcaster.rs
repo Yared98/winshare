@@ -115,12 +115,42 @@ impl BroadcasterShared {
     }
 }
 
+/// Fonte ativa da transmissão: sinal de parada, status e handles das threads.
+struct ActiveSource {
+    name: String,
+    stop: Arc<AtomicBool>,
+    status: Arc<SourceStatus>,
+    video_thread: Option<thread::JoinHandle<()>>,
+    audio_thread: Option<thread::JoinHandle<()>>,
+}
+
+impl ActiveSource {
+    fn stop_and_join(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.video_thread.take() {
+            let _ = thread.join();
+        }
+        if let Some(thread) = self.audio_thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl Drop for ActiveSource {
+    fn drop(&mut self) {
+        self.stop_and_join();
+    }
+}
+
 pub struct Broadcaster {
+    handle: Handle,
+    settings: VideoSettings,
     video: Arc<FanoutTrack>,
     audio: Arc<FanoutTrack>,
-    stop: Arc<AtomicBool>,
+    video_ssrc: u32,
+    audio_ssrc: u32,
     shared: Arc<BroadcasterShared>,
-    status: Arc<SourceStatus>,
+    active_source: Mutex<Option<ActiveSource>>,
 }
 
 impl Broadcaster {
@@ -132,7 +162,7 @@ impl Broadcaster {
     /// Inicia a fonte sintética (vídeo animado + tom senoidal) em threads próprias.
     /// Deve ser chamado dentro de um runtime tokio: o `Handle` é usado para escrever nas tracks.
     pub fn start_test_source(handle: Handle, settings: VideoSettings) -> Result<Self> {
-        let broadcaster = Self::start(handle, VideoInput::Test, AudioInput::Tone, settings)?;
+        let broadcaster = Self::start(handle, VideoInput::Test, AudioInput::Tone, settings, "test".to_owned())?;
         info!(
             "fonte de teste iniciada ({TEST_WIDTH}x{TEST_HEIGHT}@{TEST_FPS} + tom de {TEST_TONE_HZ} Hz)"
         );
@@ -150,6 +180,7 @@ impl Broadcaster {
             VideoInput::Capture(CaptureDevice::Window(capture)),
             AudioInput::Process(pid),
             settings,
+            format!("window (hwnd {hwnd})"),
         )?;
         info!(hwnd, pid, "captura da janela iniciada");
         Ok(broadcaster)
@@ -165,6 +196,7 @@ impl Broadcaster {
             VideoInput::Capture(CaptureDevice::Monitor(capture)),
             AudioInput::System,
             settings,
+            format!("monitor (id {monitor_id})"),
         )?;
         info!(monitor_id, "captura do monitor iniciada");
         Ok(broadcaster)
@@ -175,6 +207,7 @@ impl Broadcaster {
         video_input: VideoInput,
         audio_input: AudioInput,
         settings: VideoSettings,
+        name: String,
     ) -> Result<Self> {
         let video_ssrc: u32 = rand::random();
         let audio_ssrc: u32 = rand::random();
@@ -217,39 +250,134 @@ impl Broadcaster {
             None,
         ));
 
+        let broadcaster = Self {
+            handle,
+            settings,
+            video,
+            audio,
+            video_ssrc,
+            audio_ssrc,
+            shared,
+            active_source: Mutex::new(None),
+        };
+
+        let source = broadcaster.spawn_source(video_input, audio_input, name)?;
+        *broadcaster
+            .active_source
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(source);
+
+        Ok(broadcaster)
+    }
+
+    fn spawn_source(
+        &self,
+        video_input: VideoInput,
+        audio_input: AudioInput,
+        name: String,
+    ) -> Result<ActiveSource> {
         let stop = Arc::new(AtomicBool::new(false));
         let status = Arc::new(SourceStatus::default());
 
         let job = VideoJob {
-            handle: handle.clone(),
-            track: video.clone(),
-            ssrc: video_ssrc,
+            handle: self.handle.clone(),
+            track: self.video.clone(),
+            ssrc: self.video_ssrc,
             input: video_input,
-            settings,
+            settings: self.settings,
             stop: stop.clone(),
-            shared: shared.clone(),
+            shared: self.shared.clone(),
             status: status.clone(),
         };
-        thread::Builder::new()
+        let video_thread = thread::Builder::new()
             .name("video-source".to_owned())
             .spawn(move || run_video(job))
             .context("não consegui iniciar a thread de vídeo")?;
 
+        let track = self.audio.clone();
+        let audio_stop = stop.clone();
+        let audio_status = status.clone();
+        let handle = self.handle.clone();
+        let audio_ssrc = self.audio_ssrc;
+        let audio_thread = match thread::Builder::new()
+            .name("audio-source".to_owned())
+            .spawn(move || run_audio(handle, track, audio_ssrc, audio_input, audio_stop, audio_status))
         {
-            let (track, stop, status) = (audio.clone(), stop.clone(), status.clone());
-            thread::Builder::new()
-                .name("audio-source".to_owned())
-                .spawn(move || run_audio(handle, track, audio_ssrc, audio_input, stop, status))
-                .context("não consegui iniciar a thread de áudio")?;
-        }
+            Ok(thread) => thread,
+            Err(err) => {
+                stop.store(true, Ordering::SeqCst);
+                let _ = video_thread.join();
+                return Err(err).context("não consegui iniciar a thread de áudio");
+            }
+        };
 
-        Ok(Self {
-            video,
-            audio,
+        Ok(ActiveSource {
+            name,
             stop,
-            shared,
             status,
+            video_thread: Some(video_thread),
+            audio_thread: Some(audio_thread),
         })
+    }
+
+    fn switch_source(
+        &self,
+        video_input: VideoInput,
+        audio_input: AudioInput,
+        new_name: String,
+    ) -> Result<()> {
+        let mut guard = self
+            .active_source
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let old_name = if let Some(mut old_source) = guard.take() {
+            old_source.stop_and_join();
+            old_source.name.clone()
+        } else {
+            "nenhuma".to_owned()
+        };
+
+        info!(from = %old_name, to = %new_name, "troca de fonte realizada");
+
+        let new_source = self.spawn_source(video_input, audio_input, new_name)?;
+        *guard = Some(new_source);
+        self.shared.request_keyframe();
+        Ok(())
+    }
+
+    /// Troca a fonte da transmissão para uma janela.
+    ///
+    /// **Atenção:** Este método é bloqueante, pois aguarda o término (`join`)
+    /// das threads da fonte anterior antes de iniciar a nova.
+    pub fn switch_to_window(&self, hwnd: u64) -> Result<()> {
+        let capture = WindowCapture::start(hwnd)
+            .with_context(|| format!("não consegui capturar a janela {hwnd}"))?;
+        let pid = window_pid(hwnd)?;
+        let video_input = VideoInput::Capture(CaptureDevice::Window(capture));
+        let audio_input = AudioInput::Process(pid);
+        self.switch_source(video_input, audio_input, format!("window (hwnd {hwnd})"))
+    }
+
+    /// Troca a fonte da transmissão para um monitor.
+    ///
+    /// **Atenção:** Este método é bloqueante, pois aguarda o término (`join`)
+    /// das threads da fonte anterior antes de iniciar a nova.
+    pub fn switch_to_monitor(&self, monitor_id: u64) -> Result<()> {
+        let capture = MonitorCapture::start(monitor_id)
+            .with_context(|| format!("não consegui capturar o monitor {monitor_id}"))?;
+        let video_input = VideoInput::Capture(CaptureDevice::Monitor(capture));
+        let audio_input = AudioInput::System;
+        self.switch_source(video_input, audio_input, format!("monitor (id {monitor_id})"))
+    }
+
+    /// Troca a fonte da transmissão para a fonte de teste sintética.
+    ///
+    /// **Atenção:** Este método é bloqueante, pois aguarda o término (`join`)
+    /// das threads da fonte anterior antes de iniciar a nova.
+    pub fn switch_to_test(&self) -> Result<()> {
+        let video_input = VideoInput::Test;
+        let audio_input = AudioInput::Tone;
+        self.switch_source(video_input, audio_input, "test".to_owned())
     }
 
     /// Tracks NOVAS para um peer (uma por espectador; o encoder é o mesmo para todos).
@@ -283,20 +411,68 @@ impl Broadcaster {
 
     /// `true` quando a fonte encerrou a transmissão (ex.: janela fechada).
     pub fn ended(&self) -> bool {
-        self.status.ended()
+        let guard = self
+            .active_source
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        guard.as_ref().map_or(true, |source| source.status.ended())
     }
 
     pub fn notices(&self) -> Vec<String> {
-        self.status.notices()
+        let guard = self
+            .active_source
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        guard
+            .as_ref()
+            .map_or_else(Vec::new, |source| source.status.notices())
     }
 
     pub fn stop(&self) {
-        self.stop.store(true, Ordering::SeqCst);
+        let guard = self
+            .active_source
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(source) = guard.as_ref() {
+            source.stop.store(true, Ordering::SeqCst);
+        }
     }
 }
 
 impl Drop for Broadcaster {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_broadcaster_switch_to_test() {
+        let handle = tokio::runtime::Handle::current();
+        let settings = VideoSettings {
+            max_kbps: 2000,
+            min_kbps: 500,
+            keyframe_interval: Duration::from_secs(2),
+        };
+        let broadcaster =
+            Broadcaster::start_test_source(handle, settings).expect("inicia teste");
+        let tracks = broadcaster.tracks();
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(broadcaster.subscriber_count(), 1);
+
+        // Primeira troca test -> test
+        broadcaster.switch_to_test().expect("troca test -> test");
+        assert_eq!(broadcaster.subscriber_count(), 1);
+        assert!(!broadcaster.ended());
+
+        // Segunda troca test -> test
+        broadcaster.switch_to_test().expect("segunda troca test -> test");
+        assert_eq!(broadcaster.subscriber_count(), 1);
+        assert!(!broadcaster.ended());
+
+        broadcaster.stop();
     }
 }

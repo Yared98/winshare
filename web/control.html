@@ -713,7 +713,13 @@
     }
 
     // Botões
-    btnStartTest.disabled = isLive;
+    if (isLive) {
+      btnStartTest.textContent = 'Trocar para teste';
+      btnStartTest.disabled = status.source === 'test';
+    } else {
+      btnStartTest.textContent = 'Iniciar fonte de teste';
+      btnStartTest.disabled = false;
+    }
     btnStop.disabled = !isLive;
 
     // Avisos
@@ -838,7 +844,8 @@
         btn.textContent = 'Transmitindo';
       } else {
         btn.className = 'secondary';
-        btn.textContent = 'Compartilhar';
+        const isLive = currentStatus && currentStatus.state === 'live';
+        btn.textContent = isLive ? 'Trocar' : 'Compartilhar';
         btn.addEventListener('click', () => handleShareMonitor(m));
       }
 
@@ -863,19 +870,17 @@
   }
 
   async function handleShareMonitor(m) {
-    if (currentStatus && currentStatus.state === 'live') {
-      alert('Já existe uma transmissão ativa. Pare a transmissão atual antes de iniciar outra.');
-      return;
-    }
+    const isLive = currentStatus && currentStatus.state === 'live';
+    const endpoint = isLive ? '/api/switch' : '/api/start';
     try {
-      const status = await api('/api/start', {
+      const status = await api(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ monitor: m.id }),
       });
       renderStatus(status);
     } catch (err) {
-      if (err.status === 409) {
+      if (err.status === 409 && !isLive) {
         alert('Já existe uma transmissão ativa. Pare a transmissão atual antes de iniciar outra.');
       }
       setNotices([err.message]);
@@ -926,7 +931,8 @@
         btn.textContent = 'Transmitindo';
       } else {
         btn.className = 'secondary';
-        btn.textContent = 'Compartilhar';
+        const isLive = currentStatus && currentStatus.state === 'live';
+        btn.textContent = isLive ? 'Trocar' : 'Compartilhar';
         btn.addEventListener('click', () => handleShareWindow(w));
       }
 
@@ -949,19 +955,17 @@
   }
 
   async function handleShareWindow(w) {
-    if (currentStatus && currentStatus.state === 'live') {
-      alert('Já existe uma transmissão ativa. Pare a transmissão atual antes de iniciar outra.');
-      return;
-    }
+    const isLive = currentStatus && currentStatus.state === 'live';
+    const endpoint = isLive ? '/api/switch' : '/api/start';
     try {
-      const status = await api('/api/start', {
+      const status = await api(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ hwnd: w.hwnd }),
       });
       renderStatus(status);
     } catch (err) {
-      if (err.status === 409) {
+      if (err.status === 409 && !isLive) {
         alert('Já existe uma transmissão ativa. Pare a transmissão atual antes de iniciar outra.');
       }
       setNotices([err.message]);
@@ -969,8 +973,10 @@
   }
 
   async function startTestSource() {
+    const isLive = currentStatus && currentStatus.state === 'live';
+    const endpoint = isLive ? '/api/switch' : '/api/start';
     try {
-      const status = await api('/api/start', {
+      const status = await api(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ test: true }),
